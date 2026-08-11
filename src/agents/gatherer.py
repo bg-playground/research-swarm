@@ -13,6 +13,9 @@ from langgraph.types import Command
 from src.state import ResearchState, Source
 from src.tools.firecrawl_tools import scrape_url
 from src.utils.circuit_breaker import CircuitOpenError
+from src.utils.logging_setup import get_logger
+
+log = get_logger("research_swarm.gatherer")
 
 # Safety / cost limit – easy to raise later
 MAX_SCRAPES_PER_TURN = 3
@@ -195,6 +198,14 @@ def gatherer_node(state: ResearchState) -> Command[Literal["supervisor"]]:
         msg += f" (including {retried_count} after backoff retry)"
     if failed_count:
         msg += f" ({failed_count} still failed)"
+
+    log.info(
+        "scraped=%s retried=%s failed=%s total_sources=%s",
+        scraped_count,
+        retried_count,
+        failed_count,
+        len(updated_sources),
+    )
 
     updates = {
         "sources": updated_sources,
