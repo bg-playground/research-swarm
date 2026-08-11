@@ -57,14 +57,22 @@ source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -e .
 
 cp .env.example .env
-# Add:
+# Edit .env and set real keys:
 #   OPENAI_API_KEY=sk-...
 #   FIRECRAWL_API_KEY=fc-...
 
+# Optional: verify keys without running research
+python -m src.main --check
+
+# Run a research goal
 python -m src.main "Compare pricing and key features of leading web scraping APIs for AI agents"
+
+# Or after install:
+research-swarm "Map open-source web data APIs for AI agents"
+research-swarm --help
 ```
 
-Without keys the graph still runs but discovery/gatherer will soft-fail and tell you what’s missing.
+Without keys the graph still runs; discovery/gatherer soft-fail and print clear warnings.
 
 ---
 
