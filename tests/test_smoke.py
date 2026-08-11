@@ -151,7 +151,9 @@ def test_discovery_node_with_mock_search():
 
     assert result.goto == "supervisor"
     assert "sources" in result.update
-    assert len(result.update["sources"]) == 2
+    urls = {s.url for s in result.update["sources"]}
+    assert "https://a.example" in urls
+    assert "https://b.example" in urls
 
 
 def test_discovery_node_soft_fails_without_key():
@@ -280,3 +282,31 @@ def test_cli_check_without_keys_exits_nonzero():
     with patch.dict("os.environ", {"OPENAI_API_KEY": "", "FIRECRAWL_API_KEY": ""}, clear=False):
         code = main(["--check"])
     assert code == 1
+
+
+def test_build_search_queries_docs_bias():
+    from src.utils.query_rewrite import build_search_queries
+
+    qs = build_search_queries(
+        "From docs.firecrawl.dev, summarize search scrape crawl API",
+        max_queries=3,
+    )
+    assert len(qs) >= 1
+    assert qs[0].startswith("From docs.firecrawl.dev") or "docs.firecrawl.dev" in qs[0]
+    assert any("site:" in q for q in qs)
+
+
+def test_domain_priors_boost_docs_demote_youtube():
+    from src.utils.source_ranking import apply_domain_priors, domain_prior_delta
+
+    assert domain_prior_delta("https://docs.firecrawl.dev/api") > 0
+    assert domain_prior_delta("https://www.youtube.com/watch?v=abc") < 0
+
+    sources = [
+        Source(url="https://www.youtube.com/watch?v=abc", quality_score=0.7),
+        Source(url="https://docs.firecrawl.dev/api", quality_score=0.55),
+        Source(url="https://github.com/firecrawl/firecrawl", quality_score=0.55),
+    ]
+    ranked = apply_domain_priors(sources)
+    assert ranked[0].url.startswith("https://docs.") or "github.com" in ranked[0].url
+    assert ranked[-1].url.startswith("https://www.youtube.com")
