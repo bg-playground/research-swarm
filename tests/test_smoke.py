@@ -282,3 +282,59 @@ def test_domain_priors_boost_docs_demote_youtube():
     ]
     ranked = apply_domain_priors(sources)
     assert ranked[-1].url.startswith("https://www.youtube.com")
+
+
+def test_url_cache_roundtrip(tmp_path, monkeypatch):
+    monkeypatch.setenv("RESEARCH_SWARM_CACHE_DIR", str(tmp_path))
+    monkeypatch.delenv("RESEARCH_SWARM_CACHE_DISABLED", raising=False)
+    monkeypatch.setenv("RESEARCH_SWARM_CACHE_TTL_HOURS", "24")
+
+    from src.utils.url_cache import get_cached_source, put_cached_source, clear_cache
+
+    src = Source(
+        url="https://docs.example.com/api",
+        title="API",
+        markdown="# Hello cache",
+        quality_score=0.9,
+        source_type="scrape",
+    )
+    assert get_cached_source(src.url) is None
+    put_cached_source(src)
+    hit = get_cached_source(src.url)
+    assert hit is not None
+    assert hit.markdown == "# Hello cache"
+    assert hit.metadata.get("from_cache") is True
+    assert clear_cache() >= 1
+    assert get_cached_source(src.url) is None
+
+
+def test_url_cache_disabled(tmp_path, monkeypatch):
+    monkeypatch.setenv("RESEARCH_SWARM_CACHE_DIR", str(tmp_path))
+    monkeypatch.setenv("RESEARCH_SWARM_CACHE_DISABLED", "1")
+
+    from src.utils import url_cache
+
+    src = Source(url="https://x.example", markdown="body", quality_score=0.5)
+    url_cache.put_cached_source(src)
+    assert url_cache.get_cached_source(src.url) is None
+
+
+def test_scrape_url_uses_cache(tmp_path, monkeypatch):
+    monkeypatch.setenv("RESEARCH_SWARM_CACHE_DIR", str(tmp_path))
+    monkeypatch.delenv("RESEARCH_SWARM_CACHE_DISABLED", raising=False)
+
+    from src.utils.url_cache import put_cached_source
+    from src.tools.firecrawl_tools import scrape_url
+
+    put_cached_source(
+        Source(
+            url="https://cached.example/page",
+            title="Cached",
+            markdown="# From cache",
+            quality_score=0.88,
+        )
+    )
+    result = scrape_url("https://cached.example/page")
+    assert result is not None
+    assert result.markdown == "# From cache"
+    assert result.metadata.get("from_cache") is True
