@@ -13,10 +13,11 @@ def _safe_id(prefix: str, index: int) -> str:
 
 
 def _label(text: str, max_len: int = 42) -> str:
+    """Single-line label safe for Mermaid node text."""
     cleaned = re.sub(r"[\r\n\"\[\]{}|]+", " ", (text or "").strip())
     cleaned = re.sub(r"\s+", " ", cleaned)
     if len(cleaned) > max_len:
-        cleaned = cleaned[: max_len - 1] + "\u2026"
+        cleaned = cleaned[: max_len - 1] + "..."
     return cleaned or "untitled"
 
 
@@ -27,7 +28,7 @@ def build_mermaid_citation_graph(
     max_sources: int = 8,
     max_facts: int = 10,
 ) -> str:
-    """Return a Mermaid flowchart linking sources \u2192 facts."""
+    """Return a Mermaid flowchart linking sources to facts."""
     src_list = list(sources)[:max_sources]
     fact_list = list(facts)[:max_facts]
 
@@ -70,4 +71,5 @@ def build_mermaid_citation_graph(
         lines.append(f"  class {fids} fact")
 
     body = "\n".join(lines)
-    return f"```mermaid\n{body}\n```
+    # Use concatenation so nested backticks never break the string literal
+    return "```mermaid\n" + body + "\n```\n"
