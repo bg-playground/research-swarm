@@ -9,6 +9,7 @@ from langgraph.types import Command
 
 from src.state import ResearchState, Source
 from src.tools.firecrawl_tools import search_web
+from src.utils.circuit_breaker import CircuitOpenError
 
 
 def discovery_node(state: ResearchState) -> Command[Literal["supervisor"]]:
@@ -39,6 +40,9 @@ def discovery_node(state: ResearchState) -> Command[Literal["supervisor"]]:
             "Discovery: FIRECRAWL_API_KEY is not set. "
             "Skipping live search. Add the key to enable real discovery."
         )
+    except CircuitOpenError as exc:
+        errors.append(str(exc))
+        message = f"Discovery: circuit breaker is open – {exc}"
     except Exception as exc:
         errors.append(f"Discovery search failed: {exc}")
         message = f"Discovery: search failed ({exc}). Returning control to supervisor."
