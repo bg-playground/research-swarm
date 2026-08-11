@@ -1,49 +1,35 @@
-# research-swarm
+# 🐝 research-swarm
 
-**Multi-agent research system** built with [LangGraph](https://github.com/langchain-ai/langgraph) + [Firecrawl](https://github.com/firecrawl/firecrawl).
+**Multi-agent research that actually finishes.**
 
-Give it a research goal. A supervisor routes work across specialized agents (Discovery → Gatherer → Extractor → Verifier → Synthesizer) and returns a **cited markdown report** from the live web.
+Give it a goal → a LangGraph supervisor routes **Discovery → Gatherer → Extractor → Verifier → Synthesizer** → you get a **cited markdown report** from the live web via [Firecrawl](https://github.com/firecrawl/firecrawl).
 
-> **Status:** Core system is usable. Supervisor, Firecrawl-powered discovery & gatherer (with parallel scrape, retries, rate-limit backoff, and circuit breaker), LLM extractor/synthesizer, and full graph wiring are in place.
+[![CI](https://github.com/bg-playground/research-swarm/actions/workflows/ci.yml/badge.svg)](https://github.com/bg-playground/research-swarm/actions/workflows/ci.yml)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
+```text
+  goal ──► supervisor ──┬── discovery   (Firecrawl Search)
+                        ├── gatherer    (parallel scrape + retry)
+                        ├── extractor   (structured facts)
+                        ├── verifier    (conflicts / quality)
+                        └── synthesizer ──► cited report
+```
 
 ---
 
 ## Why this exists
 
-Most “research agents” are either:
+Most “research agents” are either a single ReAct loop that drifts, or a heavy framework that’s hard to read.
 
-- a single ReAct loop that gets lost on multi-step research, or  
-- heavy frameworks that are hard to inspect and extend.
+**research-swarm** stays small and explicit:
 
-**research-swarm** keeps the control flow explicit (LangGraph supervisor + specialists), uses Firecrawl for reliable LLM-ready web data, and stays small enough to read in an afternoon.
+| | |
+|---|---|
+| **Good for** | Competitive intel, product / landscape research, docs deep-dives, source-backed briefings |
+| **Not for** | Bulk site scraping, authenticated browser flows (yet), long-running monitors |
 
-**Good for:** competitive intel, product/landscape research, docs deep-dives, source-backed briefings.  
-**Not for:** bulk site scraping, authenticated multi-step browser flows (yet), or long-running monitoring (use a scheduler on top).
-
----
-
-## Architecture
-
-```
-User Goal
-    │
-    ▼
-Supervisor (plans + routes)
-    ├── discovery   → Firecrawl Search
-    ├── gatherer    → parallel Scrape (+ retry / backoff)
-    ├── extractor   → structured facts (LLM)
-    ├── verifier    → quality + conflict signals
-    └── synthesizer → cited report
-         │
-         └── back to Supervisor until FINISH
-```
-
-Resilience layers:
-
-1. Circuit breaker (stops calling after sustained failures)  
-2. Rate-limit retry with exponential backoff  
-3. Gatherer-level retry pass after a short delay  
-4. Concurrency cap (max 3 scrapes per turn)
+Resilience is built in: circuit breaker, rate-limit backoff, gatherer retry, concurrency cap (3 scrapes/turn).
 
 ---
 
@@ -57,111 +43,82 @@ source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -e .
 
 cp .env.example .env
-# Edit .env and set real keys:
-#   OPENAI_API_KEY=sk-...
-#   FIRECRAWL_API_KEY=fc-...
+# Set OPENAI_API_KEY and FIRECRAWL_API_KEY
 
-# Optional: verify keys without running research
 python -m src.main --check
-
-# Run a research goal
-python -m src.main "Compare pricing and key features of leading web scraping APIs for AI agents"
-
-# Or after install:
-research-swarm "Map open-source web data APIs for AI agents"
-research-swarm --help
+python -m src.main "Summarize core Firecrawl API concepts from docs.firecrawl.dev for agent builders"
 ```
 
-Without keys the graph still runs; discovery/gatherer soft-fail and print clear warnings.
+Or after install: `research-swarm "Your research goal"` · `research-swarm --help`
 
 ---
 
 ## Example goals
 
-| Goal | What you get |
-|------|----------------|
-| [Competitor pricing & features](examples/01_competitor_pricing.md) | Side-by-side style findings + sources |
-| [Open-source landscape](examples/02_oss_landscape.md) | Map of tools, positioning, citations |
-| [Docs / changelog deep-dive](examples/03_docs_deep_dive.md) | Structured notes from documentation sites |
+| Example | Try |
+|---------|-----|
+| [Competitor pricing](examples/01_competitor_pricing.md) | `python -m src.main "Compare Firecrawl and traditional scrapers for LLM agents"` |
+| [OSS landscape](examples/02_oss_landscape.md) | `python -m src.main "Map open-source web data APIs aimed at AI agents"` |
+| [Docs deep-dive](examples/03_docs_deep_dive.md) | `python -m src.main "From docs.firecrawl.dev, summarize search, scrape, crawl, map, interact"` |
 
-Run any of them:
+---
 
-```bash
-python -m src.main "Compare Firecrawl, Browserbase, and traditional scrapers for LLM agents"
-python -m src.main "Map the open-source landscape for web data APIs aimed at AI agents"
-python -m src.main "Summarize recent changes and key concepts in the Firecrawl documentation"
+## What a run looks like
+
+```text
+🐝  research-swarm
+────────────────────────────────────────
+Goal            Summarize core concepts…
+Max iterations  8
+────────────────────────────────────────
+  discovery   → 6 sources
+  gatherer    → 3 scraped
+  extractor   → 5 facts
+  verifier    → 0 conflicts
+  synthesizer → report ready
+────────────────────────────────────────
+✓ completed · 6 iterations · 6 sources · 5 facts
 ```
 
-See the `examples/` folder for expected report shape and notes.
+Reports are markdown: executive summary, key findings, sources, gaps.
+
+---
+
+## Configuration
+
+| Variable | Required | Notes |
+|----------|----------|--------|
+| `OPENAI_API_KEY` | Yes | Supervisor / extractor / synthesizer |
+| `FIRECRAWL_API_KEY` | Yes | Live search & scrape |
+| `FIRECRAWL_API_URL` | No | Self-hosted Firecrawl |
+| `RESEARCH_SWARM_MODEL` | No | Default `gpt-4o-mini` |
+| `RESEARCH_SWARM_TEMPERATURE` | No | Default `0` |
+| `RESEARCH_SWARM_LOG_LEVEL` | No | `DEBUG` / `INFO` / … |
+| `LANGCHAIN_TRACING_V2` | No | Set `true` + `LANGCHAIN_API_KEY` for LangSmith |
 
 ---
 
 ## Project layout
 
-```
+```text
 src/
-├── graph.py              # StateGraph + run_research()
-├── state.py              # ResearchState + models
-├── main.py               # CLI entrypoint
-├── config.py
-├── tools/
-│   └── firecrawl_tools.py
-├── utils/
-│   ├── circuit_breaker.py
-│   └── logging_setup.py
-└── agents/
-    ├── supervisor.py
-    ├── discovery.py
-    ├── gatherer.py
-    ├── extractor.py
-    ├── verifier.py
-    └── synthesizer.py
-examples/
-├── 01_competitor_pricing.md
-├── 02_oss_landscape.md
-├── 03_docs_deep_dive.md
-└── run_stub.py
+├── graph.py · state.py · main.py · config.py
+├── tools/firecrawl_tools.py
+├── utils/circuit_breaker.py · logging_setup.py
+└── agents/  supervisor · discovery · gatherer · extractor · verifier · synthesizer
+examples/   01_competitor_pricing · 02_oss_landscape · 03_docs_deep_dive
+tests/      smoke tests (no API keys required)
 ```
-
----
-
-## Configuration (env)
-
-| Variable | Required | Notes |
-|----------|----------|--------|
-| `OPENAI_API_KEY` | Yes (for supervisor / extractor / synthesizer) | Any OpenAI-compatible key works if you point the client appropriately |
-| `FIRECRAWL_API_KEY` | Yes (for live web) | Get one at [firecrawl.dev](https://firecrawl.dev) |
-| `FIRECRAWL_API_URL` | No | For self-hosted Firecrawl |
-| `RESEARCH_SWARM_LOG_LEVEL` | No | `DEBUG` / `INFO` / `WARNING` (default `INFO`) |
-| `LANGCHAIN_TRACING_V2` | No | Set `true` to enable LangSmith tracing |
-| `LANGCHAIN_API_KEY` | No | LangSmith API key (when tracing is on) |
-| `LANGCHAIN_PROJECT` | No | Defaults to `research-swarm` |
-
-Tunable constants live in the agents/tools (e.g. `MAX_SCRAPES_PER_TURN = 3`, circuit thresholds). They will be centralized in a later pass.
-
-### Observability
-
-- Structured logs to stderr: timestamp, level, component, message (supervisor routing, discovery/gatherer counts, run start/finish).
-- Optional [LangSmith](https://smith.langchain.com) tracing when `LANGCHAIN_TRACING_V2=true` and `LANGCHAIN_API_KEY` are set.
-
----
-
-## Tests
 
 ```bash
-pip install -e ".[dev]"
-pytest tests/ -v
+pip install -e ".[dev]" && pytest tests/ -v
 ```
-
-Smoke tests mock Firecrawl and LLM calls — no API keys required. CI runs them on every push/PR to `main`.
 
 ---
 
 ## Responsible use
 
-- Respect site terms and `robots.txt`.  
-- The built-in rate-limit backoff, concurrency cap, and circuit breaker are there to reduce load — do not remove them for aggressive crawling.  
-- This project is for research and synthesis, not large-scale data harvesting.
+Respect site terms and `robots.txt`. Rate-limit backoff, concurrency caps, and the circuit breaker exist to reduce load — don’t strip them for aggressive crawling. Built for research and synthesis, not bulk harvesting.
 
 ---
 
