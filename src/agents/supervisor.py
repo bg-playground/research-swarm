@@ -51,11 +51,12 @@ Rules:
 2. You may jump ahead or go back if the state clearly requires it (e.g. missing sources → discovery).
 3. Light re-planning is allowed: you may add, remove, or re-order subtasks when it clearly improves the research.
 4. Never invent facts. Only route.
-5. Stop (FINISH) when:
+5. Prefer gatherer when many sources lack markdown; prefer extractor when markdown exists but Sources pending extract > 0.
+6. Stop (FINISH) when:
    - The original goal is adequately answered, or
    - max_iterations is approaching and we have usable results, or
    - Further work would add little value.
-6. Keep reasoning concise (2-4 sentences).
+7. Keep reasoning concise (2-4 sentences).
 
 Current research goal: {goal}
 Current iteration: {iteration} / {max_iterations}
@@ -87,7 +88,15 @@ def _build_supervisor_messages(state: ResearchState) -> list:
         if plan.notes:
             summary_parts.append(f"Plan notes: {plan.notes}")
 
+    already = set(state.get("extracted_urls") or [])
+    contentful = [s for s in sources if s.markdown]
+    pending_extract = [s for s in contentful if s.url not in already]
+    unscored = [s for s in sources if not s.markdown]
+
     summary_parts.append(f"Sources collected: {len(sources)}")
+    summary_parts.append(f"Sources with markdown: {len(contentful)}")
+    summary_parts.append(f"Sources not yet scraped: {len(unscored)}")
+    summary_parts.append(f"Sources pending extract: {len(pending_extract)}")
     summary_parts.append(f"Extracted facts: {len(facts)}")
     summary_parts.append(f"Conflicts detected: {len(conflicts)}")
     if errors:
