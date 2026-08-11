@@ -122,6 +122,16 @@ Respect site terms and `robots.txt`. Rate-limit backoff, concurrency caps, and t
 
 ---
 
+## Author
+
+Built by **Brad Guider** — independent QA / testing engineer and creator of [NAT Testing](https://nat-testing.io) (AI-powered accessibility & full-stack testing).
+
+- Portfolio: [bradguider.com](https://bradguider.com)
+- X: [@GuiderBrad](https://x.com/GuiderBrad)
+- NAT Testing: [nat-testing.io](https://nat-testing.io)
+
+---
+
 ## License
 
 MIT
