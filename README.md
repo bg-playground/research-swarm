@@ -136,6 +136,17 @@ Tunable constants live in the agents/tools (e.g. `MAX_SCRAPES_PER_TURN = 3`, cir
 
 ---
 
+## Tests
+
+```bash
+pip install -e ".[dev]"
+pytest tests/ -v
+```
+
+Smoke tests mock Firecrawl and LLM calls — no API keys required. CI runs them on every push/PR to `main`.
+
+---
+
 ## Responsible use
 
 - Respect site terms and `robots.txt`.  
