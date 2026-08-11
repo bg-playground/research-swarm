@@ -126,6 +126,7 @@ def _minimal_state(**overrides: Any) -> ResearchState:
         "sources": [],
         "extracted_facts": [],
         "conflicts": [],
+        "extracted_urls": [],
         "next_agent": None,
         "iteration": 0,
         "max_iterations": 5,
@@ -251,6 +252,26 @@ def test_synthesizer_node_fallback_without_llm():
     assert result.update.get("status") == "completed"
 
 
+def test_extractor_skips_already_extracted_urls():
+    """Incremental extract: sources in extracted_urls are not re-processed."""
+    from src.agents.extractor import extractor_node
+
+    src = Source(
+        url="https://docs.example.com/api",
+        title="API",
+        markdown="# API\n\nEndpoint details here.",
+        quality_score=0.9,
+    )
+    state = _minimal_state(
+        sources=[src],
+        extracted_urls=["https://docs.example.com/api"],
+    )
+    result = extractor_node(state)
+    assert result.goto == "supervisor"
+    text = result.update["messages"][0].content.lower()
+    assert "no new sources" in text or "skipping" in text
+
+
 def test_build_graph_compiles():
     from src.graph import build_graph
 
@@ -266,6 +287,7 @@ def test_create_initial_state():
     assert state["max_iterations"] == 4
     assert state["status"] == "running"
     assert state["sources"] == []
+    assert state["extracted_urls"] == []
 
 
 def test_cli_help_exits_zero():
