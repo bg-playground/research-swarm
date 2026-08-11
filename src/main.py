@@ -45,47 +45,118 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="research-swarm",
         description=(
-            "Multi-agent research system (LangGraph + Firecrawl). "
-            "Give a research goal; get a cited markdown report from the live web."
+            "Multi-agent research system (LangGraph + Firecrawl).\n"
+            "Give a research goal and get a cited markdown report from the live web.\n"
+            "Reports auto-save under ./reports/ (see --report-version, --list-reports)."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
+  # Run research (auto-saves under reports/)
   python -m src.main "Compare Firecrawl and Browserbase for LLM agents"
-  research-swarm "Map open-source web data APIs for AI agents"
+  python -m src.main "From docs.firecrawl.dev, summarize search, scrape, crawl, map"
+
+  # Save location & versioning
   python -m src.main -o report.md "Summarize Firecrawl docs for agent builders"
-  python -m src.main --no-save "Quick run without writing a file"
-  python -m src.main --report-version sequential "Re-run same goal with v001, v002..."
+  python -m src.main --report-version sequential "Same goal -> v001.md, v002.md, ..."
+  python -m src.main --report-version latest "Overwrite <slug>.md; archive on change"
+  python -m src.main --no-save "Terminal only (do not write a file)"
+
+  # Inspect past runs
   python -m src.main --list-reports
   python -m src.main --list-reports --limit 5
+  python -m src.main --list-reports --json
+
+  # Utilities
+  python -m src.main --check
   python -m src.main --max-iterations 10 --json -o out.md "Your goal"
+  research-swarm --help
 
 Environment:
-  OPENAI_API_KEY      Required for supervisor / extractor / synthesizer
-  FIRECRAWL_API_KEY   Required for live web discovery & scraping
-  FIRECRAWL_API_URL   Optional (self-hosted Firecrawl)
-  RESEARCH_SWARM_REPORTS_DIR  Optional (default: ./reports)
-  RESEARCH_SWARM_REPORT_VERSIONING  timestamp|sequential|latest (default: timestamp)
-  RESEARCH_SWARM_LOG_LEVEL  Optional (DEBUG/INFO/WARNING)
-  LANGCHAIN_TRACING_V2      Optional (true to enable LangSmith)
-  NO_COLOR                  Disable ANSI colors
+  OPENAI_API_KEY                 Required (supervisor / extractor / synthesizer)
+  FIRECRAWL_API_KEY              Required (live search, scrape, map)
+  FIRECRAWL_API_URL              Optional self-hosted Firecrawl base URL
+  RESEARCH_SWARM_REPORTS_DIR     Report directory (default: ./reports)
+  RESEARCH_SWARM_REPORT_VERSIONING  timestamp | sequential | latest
+  RESEARCH_SWARM_CACHE_TTL_HOURS Scrape cache TTL hours (default: 24)
+  RESEARCH_SWARM_CACHE_DISABLED  Set 1 to disable disk URL cache
+  RESEARCH_SWARM_MODEL           Chat model id (default: gpt-4o-mini)
+  RESEARCH_SWARM_LOG_LEVEL       DEBUG | INFO | WARNING | ERROR
+  LANGCHAIN_TRACING_V2           true + LANGCHAIN_API_KEY for LangSmith
+  NO_COLOR                       Disable ANSI colors
         """,
     )
-    parser.add_argument("goal", nargs="*", help="Research goal (free text). If omitted, a default example goal is used.")
-    parser.add_argument("--max-iterations", type=int, default=8, metavar="N", help="Max supervisor iterations (default: 8)")
-    parser.add_argument("--json", action="store_true", help="Print structured JSON (also used with --list-reports)")
-    parser.add_argument("-o", "--output", metavar="PATH", help="Write markdown report to PATH (overrides auto path).")
-    parser.add_argument("--no-save", action="store_true", help="Do not write a report file.")
+    parser.add_argument(
+        "goal",
+        nargs="*",
+        help=(
+            "Research goal as free text. "
+            "If omitted (and not using --check / --list-reports), a default example goal is used."
+        ),
+    )
+    parser.add_argument(
+        "--max-iterations",
+        type=int,
+        default=8,
+        metavar="N",
+        help="Maximum supervisor routing iterations before forced finish (default: 8).",
+    )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help=(
+            "After a research run, also print structured_report JSON. "
+            "With --list-reports, print the index as JSON instead of a table."
+        ),
+    )
+    parser.add_argument(
+        "-o",
+        "--output",
+        metavar="PATH",
+        help=(
+            "Write the markdown report to PATH (UTF-8; creates parent dirs). "
+            "Overrides automatic reports/ path and versioning. "
+            "With --json, also writes a companion .json sidecar."
+        ),
+    )
+    parser.add_argument(
+        "--no-save",
+        action="store_true",
+        help="Skip writing a report file (stdout only). Default is to auto-save under reports/.",
+    )
     parser.add_argument(
         "--report-version",
         choices=["timestamp", "sequential", "latest"],
         default=None,
         metavar="STRATEGY",
-        help="timestamp (default) | sequential | latest",
+        help=(
+            "How auto-saved reports are named: "
+            "'timestamp' -> reports/YYYYMMDD-HHMMSS-<slug>.md (default); "
+            "'sequential' -> reports/<slug>/v001.md, v002.md, ...; "
+            "'latest' -> reports/<slug>.md (archives prior version when content changes). "
+            "Overrides RESEARCH_SWARM_REPORT_VERSIONING."
+        ),
     )
-    parser.add_argument("--list-reports", action="store_true", help="List recent saved reports from reports/index.json and exit")
-    parser.add_argument("--limit", type=int, default=20, metavar="N", help="With --list-reports, show at most N entries (default: 20)")
-    parser.add_argument("--check", action="store_true", help="Only check environment / keys and exit")
+    parser.add_argument(
+        "--list-reports",
+        action="store_true",
+        help=(
+            "List recent saved runs from reports/index.json (newest first) and exit. "
+            "Does not start a research run. Combine with --limit and --json."
+        ),
+    )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=20,
+        metavar="N",
+        help="With --list-reports, show at most N entries (default: 20).",
+    )
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="Validate OPENAI_API_KEY and FIRECRAWL_API_KEY and exit (no research run).",
+    )
     return parser
 
 
@@ -159,7 +230,6 @@ def _write_report_files(
 
 
 def _list_reports(*, limit: int = 20, as_json: bool = False) -> int:
-    """Print recent report index entries. Returns process exit code."""
     from src.utils.report_versioning import load_report_index, reports_dir
 
     root = reports_dir()
@@ -180,8 +250,7 @@ def _list_reports(*, limit: int = 20, as_json: bool = False) -> int:
             _safe_print(f"{S.dim}Backup: {bak}{S.reset}")
         return 1
 
-    runs = list(data.get("runs") or [])
-    runs = list(reversed(runs))
+    runs = list(reversed(list(data.get("runs") or [])))
     limit = max(1, int(limit or 20))
     shown = runs[:limit]
 
@@ -336,11 +405,7 @@ def main(argv: list[str] | None = None) -> int:
 
     log.info(
         "Run finished status=%s iterations=%s sources=%s facts=%s conflicts=%s",
-        status,
-        n_iter,
-        n_src,
-        n_facts,
-        n_conf,
+        status, n_iter, n_src, n_facts, n_conf,
     )
 
     status_color = S.green if status == "completed" else S.yellow
