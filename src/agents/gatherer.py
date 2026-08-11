@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import random
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Literal, Optional, Tuple
 
@@ -14,6 +16,10 @@ from src.tools.firecrawl_tools import scrape_url
 # Safety / cost limit – easy to raise later
 MAX_SCRAPES_PER_TURN = 3
 MAX_WORKERS = 3
+
+# Short backoff before the gatherer-level retry pass
+RETRY_BASE_DELAY = 1.5  # seconds
+RETRY_JITTER = 0.75
 
 
 def _scrape_one(src: Source) -> Tuple[str, Optional[Source], Optional[str]]:
@@ -88,7 +94,8 @@ def gatherer_node(state: ResearchState) -> Command[Literal["supervisor"]]:
 
     Scrapes the most promising sources that still lack markdown content,
     running up to MAX_SCRAPES_PER_TURN requests in parallel.
-    Failed URLs get one additional retry pass within the same turn.
+    Failed URLs get one additional retry pass within the same turn
+    after a short exponential-style backoff.
     Gracefully degrades if the API key is missing.
     """
     sources = list(state.get("sources", []))
@@ -151,8 +158,16 @@ def gatherer_node(state: ResearchState) -> Command[Literal["supervisor"]]:
     retried_count = 0
     if failed_sources:
         # Only retry the ones that still lack content
-        retry_batch = [s for s in failed_sources if s.url in updated_by_url and not updated_by_url[s.url].markdown]
+        retry_batch = [
+            s
+            for s in failed_sources
+            if s.url in updated_by_url and not updated_by_url[s.url].markdown
+        ]
         if retry_batch:
+            # Polite exponential-style pause before retrying
+            delay = RETRY_BASE_DELAY + random.uniform(0, RETRY_JITTER)
+            time.sleep(delay)
+
             extra_scraped, extra_failed, api_key_missing, _ = _run_batch(
                 retry_batch, updated_by_url, errors
             )
@@ -180,7 +195,7 @@ def gatherer_node(state: ResearchState) -> Command[Literal["supervisor"]]:
 
     msg = f"Gatherer: successfully scraped {scraped_count} source(s) in parallel"
     if retried_count:
-        msg += f" (including {retried_count} on retry)"
+        msg += f" (including {retried_count} after backoff retry)"
     if failed_count:
         msg += f" ({failed_count} still failed)"
 
