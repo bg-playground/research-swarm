@@ -1,8 +1,8 @@
-"""Tests for --list-reports CLI helper."""
+"""Tests for --list-reports CLI helper and --help documentation."""
 
 import json
 
-from src.main import _list_reports
+from src.main import _build_parser, _list_reports
 
 
 def test_list_reports_missing_index(tmp_path, monkeypatch, capsys):
@@ -72,3 +72,23 @@ def test_list_reports_corrupt_index(tmp_path, monkeypatch, capsys):
     assert code == 1
     out = capsys.readouterr().out
     assert "corrupt" in out.lower()
+
+
+def test_help_documents_flags():
+    help_text = _build_parser().format_help()
+    for token in (
+        "--list-reports",
+        "--report-version",
+        "--no-save",
+        "--output",
+        "--check",
+        "--limit",
+        "--json",
+        "--max-iterations",
+        "RESEARCH_SWARM_REPORTS_DIR",
+        "FIRECRAWL_API_KEY",
+        "timestamp",
+        "sequential",
+        "latest",
+    ):
+        assert token in help_text, f"missing from --help: {token}"
