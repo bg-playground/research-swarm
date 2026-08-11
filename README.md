@@ -107,7 +107,8 @@ src/
 ├── tools/
 │   └── firecrawl_tools.py
 ├── utils/
-│   └── circuit_breaker.py
+│   ├── circuit_breaker.py
+│   └── logging_setup.py
 └── agents/
     ├── supervisor.py
     ├── discovery.py
@@ -131,8 +132,17 @@ examples/
 | `OPENAI_API_KEY` | Yes (for supervisor / extractor / synthesizer) | Any OpenAI-compatible key works if you point the client appropriately |
 | `FIRECRAWL_API_KEY` | Yes (for live web) | Get one at [firecrawl.dev](https://firecrawl.dev) |
 | `FIRECRAWL_API_URL` | No | For self-hosted Firecrawl |
+| `RESEARCH_SWARM_LOG_LEVEL` | No | `DEBUG` / `INFO` / `WARNING` (default `INFO`) |
+| `LANGCHAIN_TRACING_V2` | No | Set `true` to enable LangSmith tracing |
+| `LANGCHAIN_API_KEY` | No | LangSmith API key (when tracing is on) |
+| `LANGCHAIN_PROJECT` | No | Defaults to `research-swarm` |
 
 Tunable constants live in the agents/tools (e.g. `MAX_SCRAPES_PER_TURN = 3`, circuit thresholds). They will be centralized in a later pass.
+
+### Observability
+
+- Structured logs to stderr: timestamp, level, component, message (supervisor routing, discovery/gatherer counts, run start/finish).
+- Optional [LangSmith](https://smith.langchain.com) tracing when `LANGCHAIN_TRACING_V2=true` and `LANGCHAIN_API_KEY` are set.
 
 ---
 
