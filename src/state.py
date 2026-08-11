@@ -10,14 +10,12 @@ from pydantic import BaseModel, Field
 from typing_extensions import TypedDict
 
 
-# ---------- Supporting Models ----------
-
 class Source(BaseModel):
     """A single web source collected during research."""
 
     url: str
     title: Optional[str] = None
-    markdown: Optional[str] = None  # truncated clean content from Firecrawl
+    markdown: Optional[str] = None
     summary: Optional[str] = None
     quality_score: float = Field(default=0.5, ge=0.0, le=1.0)
     source_type: Literal["search", "scrape", "crawl", "map"] = "scrape"
@@ -28,10 +26,13 @@ class ExtractedFact(BaseModel):
     """A structured fact extracted from one or more sources."""
 
     claim: str
-    value: Any  # str, number, list, dict, etc.
+    # Must be a concrete JSON Schema type for OpenAI structured outputs (not Any).
+    value: str = Field(
+        description="Concrete value as a short string (numbers, lists, etc. serialized to text)"
+    )
     source_urls: List[str]
     confidence: float = Field(default=0.7, ge=0.0, le=1.0)
-    category: Optional[str] = None  # e.g. "pricing", "features", "team"
+    category: Optional[str] = None
 
 
 class Conflict(BaseModel):
@@ -51,34 +52,21 @@ class ResearchPlan(BaseModel):
     notes: Optional[str] = None
 
 
-# ---------- Main Graph State ----------
-
 class ResearchState(TypedDict):
     """Shared state for the entire research-swarm graph."""
 
-    # Conversation history
     messages: Annotated[List[BaseMessage], add_messages]
-
-    # Core research context
     goal: str
     plan: Optional[ResearchPlan]
-
-    # Accumulated knowledge
     sources: List[Source]
     extracted_facts: List[ExtractedFact]
     conflicts: List[Conflict]
-
-    # Control flow
     next_agent: Optional[
         Literal["discovery", "gatherer", "extractor", "verifier", "synthesizer", "FINISH"]
     ]
     iteration: int
     max_iterations: int
-
-    # Final output
     report: Optional[str]
     structured_report: Optional[Dict[str, Any]]
-
-    # Diagnostics
     errors: List[str]
     status: Literal["running", "completed", "failed", "needs_human"]

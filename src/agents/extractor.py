@@ -30,7 +30,8 @@ Rules:
 4. Use a short category when useful (e.g. pricing, features, limits, company, comparison).
 5. Do not invent information. If the content is thin, return fewer facts.
 6. Avoid duplicate claims; merge near-duplicates into one fact with multiple source_urls when possible.
-7. Keep claim text concise (one sentence). Put detail in value (string, number, or short list/dict).
+7. Keep claim text concise (one sentence). Put detail in value as a short string
+   (serialize numbers, short lists, or key points as plain text).
 """
 
 
@@ -94,7 +95,7 @@ def extractor_node(state: ResearchState) -> Command[Literal["supervisor"]]:
     new_facts: List[ExtractedFact] = []
     try:
         llm = get_chat_model(temperature=0)
-        structured = llm.with_structured_output(ExtractionResult)
+        structured = llm.with_structured_output(ExtractionResult, method="function_calling")
         result: ExtractionResult = structured.invoke(
             [SystemMessage(content=EXTRACTOR_SYSTEM), HumanMessage(content=human)]
         )

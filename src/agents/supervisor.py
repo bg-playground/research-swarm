@@ -119,7 +119,7 @@ def supervisor_node(state: ResearchState) -> Command[Literal[
         )
 
     llm = get_chat_model(temperature=0)
-    structured_llm = llm.with_structured_output(SupervisorDecision)
+    structured_llm = llm.with_structured_output(SupervisorDecision, method="function_calling")
 
     messages = _build_supervisor_messages(state)
     decision: SupervisorDecision = structured_llm.invoke(messages)
