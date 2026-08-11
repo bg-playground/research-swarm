@@ -26,6 +26,8 @@ Environment:
   OPENAI_API_KEY      Required for supervisor / extractor / synthesizer
   FIRECRAWL_API_KEY   Required for live web discovery & scraping
   FIRECRAWL_API_URL   Optional (self-hosted Firecrawl)
+  RESEARCH_SWARM_LOG_LEVEL  Optional (DEBUG/INFO/WARNING)
+  LANGCHAIN_TRACING_V2      Optional (true to enable LangSmith)
         """,
     )
     parser.add_argument(
@@ -84,6 +86,12 @@ def main(argv: list[str] | None = None) -> int:
     except Exception:
         pass
 
+    from src.utils.logging_setup import enable_langsmith_if_configured, get_logger, setup_logging
+
+    setup_logging()
+    enable_langsmith_if_configured()
+    log = get_logger("research_swarm.cli")
+
     parser = _build_parser()
     args = parser.parse_args(argv)
 
@@ -108,12 +116,13 @@ def main(argv: list[str] | None = None) -> int:
     goal = " ".join(args.goal).strip()
     if not goal:
         goal = "Compare pricing and key features of leading web scraping APIs for AI agents"
-        print(f"(No goal provided — using default example.)\n")
+        print("(No goal provided — using default example.)\n")
 
-    print(f"🐝 research-swarm")
+    print("🐝 research-swarm")
     print(f"Goal: {goal}")
     print(f"Max iterations: {args.max_iterations}")
     print("-" * 60)
+    log.info("Starting research run goal=%r max_iterations=%s", goal, args.max_iterations)
 
     try:
         from src.graph import run_research
@@ -125,11 +134,22 @@ def main(argv: list[str] | None = None) -> int:
     try:
         final_state = run_research(goal, max_iterations=args.max_iterations)
     except KeyboardInterrupt:
+        log.warning("Run interrupted by user")
         print("\nInterrupted.")
         return 130
     except Exception as exc:
+        log.exception("Run failed")
         print(f"\nRun failed: {exc}")
         return 1
+
+    log.info(
+        "Run finished status=%s iterations=%s sources=%s facts=%s conflicts=%s",
+        final_state.get("status"),
+        final_state.get("iteration"),
+        len(final_state.get("sources", [])),
+        len(final_state.get("extracted_facts", [])),
+        len(final_state.get("conflicts", [])),
+    )
 
     print("\n--- Final Status ---")
     print(f"Status     : {final_state.get('status')}")
