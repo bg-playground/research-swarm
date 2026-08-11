@@ -8,6 +8,30 @@ import os
 import sys
 
 
+def _use_color() -> bool:
+    if os.getenv("NO_COLOR"):
+        return False
+    return sys.stdout.isatty()
+
+
+class _Style:
+    def __init__(self) -> None:
+        on = _use_color()
+        self.bold = "\033[1m" if on else ""
+        self.dim = "\033[2m" if on else ""
+        self.cyan = "\033[36m" if on else ""
+        self.green = "\033[32m" if on else ""
+        self.yellow = "\033[33m" if on else ""
+        self.red = "\033[31m" if on else ""
+        self.reset = "\033[0m" if on else ""
+
+    def rule(self, char: str = "\u2500", width: int = 56) -> str:
+        return f"{self.dim}{char * width}{self.reset}"
+
+
+S = _Style()
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="research-swarm",
@@ -28,6 +52,7 @@ Environment:
   FIRECRAWL_API_URL   Optional (self-hosted Firecrawl)
   RESEARCH_SWARM_LOG_LEVEL  Optional (DEBUG/INFO/WARNING)
   LANGCHAIN_TRACING_V2      Optional (true to enable LangSmith)
+  NO_COLOR                  Disable ANSI colors
         """,
     )
     parser.add_argument(
@@ -56,10 +81,6 @@ Environment:
 
 
 def _preflight() -> list[str]:
-    """
-    Return a list of human-readable warnings / problems.
-    Does not raise — caller decides whether to continue.
-    """
     issues: list[str] = []
 
     openai_key = os.getenv("OPENAI_API_KEY", "").strip()
@@ -80,9 +101,8 @@ def _preflight() -> list[str]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    # Ensure .env is loaded before preflight
     try:
-        from src import config  # noqa: F401  (loads dotenv on import)
+        from src import config  # noqa: F401
     except Exception:
         pass
 
@@ -99,83 +119,97 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.check:
         if issues:
-            print("Environment check — issues found:\n")
+            print(f"{S.yellow}Environment check \u2014 issues found:{S.reset}\n")
             for i, msg in enumerate(issues, 1):
                 print(f"  {i}. {msg}")
-            print("\nCopy .env.example → .env and fill in real keys.")
+            print(f"\n{S.dim}Copy .env.example \u2192 .env and fill in real keys.{S.reset}")
             return 1
-        print("Environment check — OK (OPENAI_API_KEY and FIRECRAWL_API_KEY look set).")
+        print(f"{S.green}Environment check \u2014 OK{S.reset} (OPENAI_API_KEY and FIRECRAWL_API_KEY look set).")
         return 0
 
     if issues:
-        print("⚠️  Configuration warnings:\n")
+        print(f"{S.yellow}\u26a0  Configuration warnings:{S.reset}\n")
         for msg in issues:
-            print(f"  • {msg}")
-        print("\nContinuing anyway — agents will soft-fail where keys are missing.\n")
+            print(f"  \u2022 {msg}")
+        print(f"\n{S.dim}Continuing anyway \u2014 agents will soft-fail where keys are missing.{S.reset}\n")
 
     goal = " ".join(args.goal).strip()
     if not goal:
         goal = "Compare pricing and key features of leading web scraping APIs for AI agents"
-        print("(No goal provided — using default example.)\n")
+        print(f"{S.dim}(No goal provided \u2014 using default example.){S.reset}\n")
 
-    print("🐝 research-swarm")
-    print(f"Goal: {goal}")
-    print(f"Max iterations: {args.max_iterations}")
-    print("-" * 60)
+    print()
+    print(f"{S.bold}{S.cyan}\ud83d\udc1d  research-swarm{S.reset}")
+    print(S.rule())
+    print(f"  {S.dim}Goal{S.reset}            {goal}")
+    print(f"  {S.dim}Max iterations{S.reset}  {args.max_iterations}")
+    print(S.rule())
+    print()
     log.info("Starting research run goal=%r max_iterations=%s", goal, args.max_iterations)
 
     try:
         from src.graph import run_research
     except ImportError as exc:
-        print(f"\nFailed to import research-swarm graph: {exc}")
-        print("Try: pip install -e .")
+        print(f"\n{S.red}Failed to import research-swarm graph:{S.reset} {exc}")
+        print(f"{S.dim}Try: pip install -e .{S.reset}")
         return 1
 
     try:
         final_state = run_research(goal, max_iterations=args.max_iterations)
     except KeyboardInterrupt:
         log.warning("Run interrupted by user")
-        print("\nInterrupted.")
+        print(f"\n{S.yellow}Interrupted.{S.reset}")
         return 130
     except Exception as exc:
         log.exception("Run failed")
-        print(f"\nRun failed: {exc}")
+        print(f"\n{S.red}Run failed:{S.reset} {exc}")
         return 1
+
+    status = final_state.get("status")
+    n_src = len(final_state.get("sources", []))
+    n_facts = len(final_state.get("extracted_facts", []))
+    n_conf = len(final_state.get("conflicts", []))
+    n_iter = final_state.get("iteration")
 
     log.info(
         "Run finished status=%s iterations=%s sources=%s facts=%s conflicts=%s",
-        final_state.get("status"),
-        final_state.get("iteration"),
-        len(final_state.get("sources", [])),
-        len(final_state.get("extracted_facts", [])),
-        len(final_state.get("conflicts", [])),
+        status,
+        n_iter,
+        n_src,
+        n_facts,
+        n_conf,
     )
 
-    print("\n--- Final Status ---")
-    print(f"Status     : {final_state.get('status')}")
-    print(f"Iterations : {final_state.get('iteration')}")
-    print(f"Sources    : {len(final_state.get('sources', []))}")
-    print(f"Facts      : {len(final_state.get('extracted_facts', []))}")
-    print(f"Conflicts  : {len(final_state.get('conflicts', []))}")
+    status_color = S.green if status == "completed" else S.yellow
+    print()
+    print(S.rule())
+    print(
+        f"  {status_color}\u2713 {status}{S.reset}  \u00b7  {n_iter} iterations  \u00b7  "
+        f"{n_src} sources  \u00b7  {n_facts} facts  \u00b7  {n_conf} conflicts"
+    )
+    print(S.rule())
 
     errors = final_state.get("errors") or []
     if errors:
-        print(f"Errors     : {len(errors)} (last: {errors[-1][:120]})")
+        print(f"\n{S.yellow}Errors ({len(errors)}){S.reset}  last: {errors[-1][:120]}")
 
     report = final_state.get("report")
     if report:
-        print("\n--- Report ---")
+        print()
+        print(f"{S.bold}{S.cyan}\ud83d\udcc4  Report{S.reset}")
+        print(S.rule("\u2550"))
         print(report)
+        print(S.rule("\u2550"))
     else:
-        print("\n(No report produced — check errors / keys / iterations.)")
+        print(f"\n{S.dim}(No report produced \u2014 check errors / keys / iterations.){S.reset}")
 
     if args.json:
         structured = final_state.get("structured_report")
         if structured:
-            print("\n--- Structured summary ---")
+            print(f"\n{S.dim}Structured summary{S.reset}")
             print(json.dumps(structured, indent=2))
 
-    print("\nDone.")
+    print(f"\n{S.dim}Done.{S.reset}\n")
     return 0
 
 
