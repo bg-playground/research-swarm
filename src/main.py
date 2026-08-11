@@ -56,6 +56,8 @@ Examples:
   python -m src.main -o report.md "Summarize Firecrawl docs for agent builders"
   python -m src.main --no-save "Quick run without writing a file"
   python -m src.main --report-version sequential "Re-run same goal with v001, v002..."
+  python -m src.main --list-reports
+  python -m src.main --list-reports --limit 5
   python -m src.main --max-iterations 10 --json -o out.md "Your goal"
 
 Environment:
@@ -69,10 +71,10 @@ Environment:
   NO_COLOR                  Disable ANSI colors
         """,
     )
-    parser.add_argument("goal", nargs="*", help="Research goal (free text).")
-    parser.add_argument("--max-iterations", type=int, default=8, metavar="N")
-    parser.add_argument("--json", action="store_true")
-    parser.add_argument("-o", "--output", metavar="PATH", help="Explicit report path (overrides auto versioning).")
+    parser.add_argument("goal", nargs="*", help="Research goal (free text). If omitted, a default example goal is used.")
+    parser.add_argument("--max-iterations", type=int, default=8, metavar="N", help="Max supervisor iterations (default: 8)")
+    parser.add_argument("--json", action="store_true", help="Print structured JSON (also used with --list-reports)")
+    parser.add_argument("-o", "--output", metavar="PATH", help="Write markdown report to PATH (overrides auto path).")
     parser.add_argument("--no-save", action="store_true", help="Do not write a report file.")
     parser.add_argument(
         "--report-version",
@@ -81,7 +83,9 @@ Environment:
         metavar="STRATEGY",
         help="timestamp (default) | sequential | latest",
     )
-    parser.add_argument("--check", action="store_true")
+    parser.add_argument("--list-reports", action="store_true", help="List recent saved reports from reports/index.json and exit")
+    parser.add_argument("--limit", type=int, default=20, metavar="N", help="With --list-reports, show at most N entries (default: 20)")
+    parser.add_argument("--check", action="store_true", help="Only check environment / keys and exit")
     return parser
 
 
@@ -135,7 +139,10 @@ def _write_report_files(
         written.append(str(out.resolve()))
 
     if structured is not None:
-        json_path = out.with_suffix(".json") if out.suffix.lower() in {".md", ".markdown", ".txt"} else Path(str(out) + ".json")
+        if out.suffix.lower() in {".md", ".markdown", ".txt"}:
+            json_path = out.with_suffix(".json")
+        else:
+            json_path = Path(str(out) + ".json")
         payload = {
             "goal": goal,
             "status": status,
@@ -151,14 +158,101 @@ def _write_report_files(
     return written
 
 
+def _list_reports(*, limit: int = 20, as_json: bool = False) -> int:
+    """Print recent report index entries. Returns process exit code."""
+    from src.utils.report_versioning import load_report_index, reports_dir
+
+    root = reports_dir()
+    index_path = root / "index.json"
+    data = load_report_index(index_path)
+
+    if data.get("missing"):
+        _safe_print(f"{S.dim}No report index found at {index_path}{S.reset}")
+        _safe_print(f"{S.dim}Run a research goal first (reports auto-save under {root}).{S.reset}")
+        return 0
+
+    if data.get("corrupt"):
+        err = data.get("error") or "unknown"
+        _safe_print(f"{S.yellow}Report index is corrupt:{S.reset} {err}")
+        _safe_print(f"{S.dim}Path: {index_path}{S.reset}")
+        bak = index_path.with_suffix(".json.bak")
+        if bak.is_file():
+            _safe_print(f"{S.dim}Backup: {bak}{S.reset}")
+        return 1
+
+    runs = list(data.get("runs") or [])
+    runs = list(reversed(runs))
+    limit = max(1, int(limit or 20))
+    shown = runs[:limit]
+
+    if as_json:
+        payload = {
+            "reports_dir": str(root),
+            "index": str(index_path),
+            "updated_at": data.get("updated_at"),
+            "total": data.get("count", len(runs)),
+            "showing": len(shown),
+            "runs": shown,
+        }
+        _safe_print(json.dumps(payload, indent=2))
+        return 0
+
+    _safe_print(f"{S.bold}{S.cyan}research-swarm reports{S.reset}")
+    _safe_print(S.rule("-"))
+    _safe_print(f"  {S.dim}dir{S.reset}    {root}")
+    _safe_print(f"  {S.dim}index{S.reset}  {index_path}")
+    total = data.get("count", len(runs))
+    _safe_print(f"  {S.dim}total{S.reset}  {total}  (showing {len(shown)})")
+    if data.get("updated_at"):
+        _safe_print(f"  {S.dim}updated{S.reset} {data.get('updated_at')}")
+    _safe_print(S.rule("-"))
+
+    if not shown:
+        _safe_print(f"{S.dim}(index exists but has no runs yet){S.reset}")
+        return 0
+
+    for i, run in enumerate(shown, 1):
+        goal = (run.get("goal") or "").strip() or "(no goal)"
+        if len(goal) > 72:
+            goal = goal[:69] + "..."
+        path = run.get("path") or "?"
+        status = run.get("status") or "?"
+        strat = run.get("strategy") or "?"
+        saved = run.get("saved_at") or ""
+        fp = run.get("fingerprint") or ""
+        stats = (
+            f"src={run.get('sources', '?')} "
+            f"facts={run.get('facts', '?')} "
+            f"iter={run.get('iterations', '?')}"
+        )
+        status_color = S.green if status == "completed" else S.yellow
+        _safe_print(f"{S.bold}{i:2d}.{S.reset} [{status_color}{status}{S.reset}] {goal}")
+        _safe_print(f"    {S.dim}path{S.reset}  {path}")
+        _safe_print(
+            f"    {S.dim}meta{S.reset}  {strat}  |  {stats}"
+            + (f"  |  fp={fp}" if fp else "")
+        )
+        if saved:
+            _safe_print(f"    {S.dim}when{S.reset}  {saved}")
+
+    _safe_print()
+    return 0
+
+
 def _preflight() -> list[str]:
     issues: list[str] = []
     openai_key = os.getenv("OPENAI_API_KEY", "").strip()
     firecrawl_key = os.getenv("FIRECRAWL_API_KEY", "").strip()
     if not openai_key or openai_key.startswith("sk-..."):
-        issues.append("OPENAI_API_KEY is missing or still a placeholder.")
+        issues.append(
+            "OPENAI_API_KEY is missing or still a placeholder. "
+            "Supervisor, extractor, and synthesizer need a real key."
+        )
     if not firecrawl_key or firecrawl_key.startswith("fc-..."):
-        issues.append("FIRECRAWL_API_KEY is missing or still a placeholder.")
+        issues.append(
+            "FIRECRAWL_API_KEY is missing or still a placeholder. "
+            "Discovery and gatherer will soft-fail without live web access."
+        )
     return issues
 
 
@@ -178,20 +272,29 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     issues = _preflight()
 
+    if args.list_reports:
+        return _list_reports(limit=args.limit, as_json=args.json)
+
     if args.check:
         if issues:
             _safe_print(f"{S.yellow}Environment check - issues found:{S.reset}\n")
             for i, msg in enumerate(issues, 1):
                 _safe_print(f"  {i}. {msg}")
+            _safe_print(f"\n{S.dim}Copy .env.example -> .env and fill in real keys.{S.reset}")
             return 1
-        _safe_print(f"{S.green}Environment check - OK{S.reset}")
+        _safe_print(
+            f"{S.green}Environment check - OK{S.reset} "
+            "(OPENAI_API_KEY and FIRECRAWL_API_KEY look set)."
+        )
         return 0
 
     if issues:
         _safe_print(f"{S.yellow}! Configuration warnings:{S.reset}\n")
         for msg in issues:
             _safe_print(f"  * {msg}")
-        _safe_print(f"\n{S.dim}Continuing anyway.{S.reset}\n")
+        _safe_print(
+            f"\n{S.dim}Continuing anyway - agents will soft-fail where keys are missing.{S.reset}\n"
+        )
 
     goal = " ".join(args.goal).strip()
     if not goal:
@@ -210,12 +313,14 @@ def main(argv: list[str] | None = None) -> int:
     try:
         from src.graph import run_research
     except ImportError as exc:
-        _safe_print(f"\n{S.red}Failed to import graph:{S.reset} {exc}")
+        _safe_print(f"\n{S.red}Failed to import research-swarm graph:{S.reset} {exc}")
+        _safe_print(f"{S.dim}Try: pip install -e .{S.reset}")
         return 1
 
     try:
         final_state = run_research(goal, max_iterations=args.max_iterations)
     except KeyboardInterrupt:
+        log.warning("Run interrupted by user")
         _safe_print(f"\n{S.yellow}Interrupted.{S.reset}")
         return 130
     except Exception as exc:
@@ -231,7 +336,11 @@ def main(argv: list[str] | None = None) -> int:
 
     log.info(
         "Run finished status=%s iterations=%s sources=%s facts=%s conflicts=%s",
-        status, n_iter, n_src, n_facts, n_conf,
+        status,
+        n_iter,
+        n_src,
+        n_facts,
+        n_conf,
     )
 
     status_color = S.green if status == "completed" else S.yellow
@@ -255,7 +364,7 @@ def main(argv: list[str] | None = None) -> int:
         _safe_print(report)
         _safe_print(S.rule("="))
     else:
-        _safe_print(f"\n{S.dim}(No report produced.){S.reset}")
+        _safe_print(f"\n{S.dim}(No report produced - check errors / keys / iterations.){S.reset}")
 
     output_path: str | None = None
     version_strategy = getattr(args, "report_version", None)
@@ -282,6 +391,7 @@ def main(argv: list[str] | None = None) -> int:
             if not args.output:
                 try:
                     from pathlib import Path
+
                     from src.utils.report_versioning import (
                         _content_fingerprint,
                         resolve_strategy,
@@ -309,9 +419,7 @@ def main(argv: list[str] | None = None) -> int:
                             f"(skipped - reports/index.json unavailable)"
                         )
                 except Exception as exc:
-                    _safe_print(
-                        f"{S.dim}Index{S.reset}  (skipped - {type(exc).__name__})"
-                    )
+                    _safe_print(f"{S.dim}Index{S.reset}  (skipped - {type(exc).__name__})")
         else:
             _safe_print(f"{S.yellow}No report content to write to {output_path}{S.reset}")
 
