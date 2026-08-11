@@ -54,7 +54,8 @@ def _build_parser() -> argparse.ArgumentParser:
 Examples:
   python -m src.main "Compare Firecrawl and Browserbase for LLM agents"
   research-swarm "Map open-source web data APIs for AI agents"
-  python -m src.main --max-iterations 10 "Summarize Firecrawl docs for agent builders"
+  python -m src.main -o report.md "Summarize Firecrawl docs for agent builders"
+  python -m src.main --max-iterations 10 --json -o out.md "Your goal"
 
 Environment:
   OPENAI_API_KEY      Required for supervisor / extractor / synthesizer
@@ -83,11 +84,68 @@ Environment:
         help="Also print the structured_report JSON after the markdown report",
     )
     parser.add_argument(
+        "-o",
+        "--output",
+        metavar="PATH",
+        help="Write the markdown report to PATH (UTF-8). Parent dirs are created if needed.",
+    )
+    parser.add_argument(
         "--check",
         action="store_true",
         help="Only check environment / keys and exit (no research run)",
     )
     return parser
+
+
+def _write_report_files(
+    *,
+    path: str,
+    report: str | None,
+    structured: dict | None,
+    goal: str,
+    status: str | None,
+    n_src: int,
+    n_facts: int,
+    n_conf: int,
+    n_iter: int | None,
+) -> list[str]:
+    """Write markdown report (and optional JSON sidecar). Returns paths written."""
+    from pathlib import Path
+
+    written: list[str] = []
+    out = Path(path).expanduser()
+    out.parent.mkdir(parents=True, exist_ok=True)
+
+    if report:
+        header = (
+            f"<!-- research-swarm export\n"
+            f"goal: {goal}\n"
+            f"status: {status}\n"
+            f"iterations: {n_iter}\n"
+            f"sources: {n_src} | facts: {n_facts} | conflicts: {n_conf}\n"
+            f"-->\n\n"
+        )
+        out.write_text(header + report, encoding="utf-8")
+        written.append(str(out.resolve()))
+
+    if structured is not None:
+        if out.suffix.lower() in {".md", ".markdown", ".txt"}:
+            json_path = out.with_suffix(".json")
+        else:
+            json_path = Path(str(out) + ".json")
+        payload = {
+            "goal": goal,
+            "status": status,
+            "iterations": n_iter,
+            "sources": n_src,
+            "facts": n_facts,
+            "conflicts": n_conf,
+            "structured_report": structured,
+        }
+        json_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        written.append(str(json_path.resolve()))
+
+    return written
 
 
 def _preflight() -> list[str]:
@@ -219,6 +277,24 @@ def main(argv: list[str] | None = None) -> int:
         _safe_print(
             f"\n{S.dim}(No report produced - check errors / keys / iterations.){S.reset}"
         )
+
+    if args.output:
+        written = _write_report_files(
+            path=args.output,
+            report=report,
+            structured=final_state.get("structured_report") if args.json else None,
+            goal=goal,
+            status=status,
+            n_src=n_src,
+            n_facts=n_facts,
+            n_conf=n_conf,
+            n_iter=n_iter,
+        )
+        if written:
+            for p in written:
+                _safe_print(f"{S.green}Wrote{S.reset} {p}")
+        else:
+            _safe_print(f"{S.yellow}No report content to write to {args.output}{S.reset}")
 
     if args.json:
         structured = final_state.get("structured_report")
