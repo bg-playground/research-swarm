@@ -121,3 +121,136 @@ def test_load_report_index_corrupt_then_update(tmp_path, monkeypatch):
     assert idx.is_file()
     assert "recover" in idx.read_text(encoding="utf-8")
     assert (tmp_path / "index.json.bak").is_file()
+
+
+def test_load_report_index_empty_file(tmp_path, monkeypatch):
+    monkeypatch.setenv("RESEARCH_SWARM_REPORTS_DIR", str(tmp_path))
+    (tmp_path / "index.json").write_text("", encoding="utf-8")
+    data = load_report_index()
+    assert data.get("empty") is True
+    assert data["runs"] == []
+    assert data.get("corrupt") is not True
+
+
+def test_load_report_index_whitespace_only(tmp_path, monkeypatch):
+    monkeypatch.setenv("RESEARCH_SWARM_REPORTS_DIR", str(tmp_path))
+    (tmp_path / "index.json").write_text("   \n\t  ", encoding="utf-8")
+    data = load_report_index()
+    assert data.get("empty") is True
+    assert data["runs"] == []
+
+
+def test_load_report_index_truncated_json(tmp_path, monkeypatch):
+    monkeypatch.setenv("RESEARCH_SWARM_REPORTS_DIR", str(tmp_path))
+    (tmp_path / "index.json").write_text('{"runs": [{"goal": "x"', encoding="utf-8")
+    data = load_report_index()
+    assert data.get("corrupt") is True
+    assert data["runs"] == []
+    assert "invalid json" in (data.get("error") or "")
+
+
+def test_load_report_index_unexpected_shape_string(tmp_path, monkeypatch):
+    monkeypatch.setenv("RESEARCH_SWARM_REPORTS_DIR", str(tmp_path))
+    (tmp_path / "index.json").write_text('"just a string"', encoding="utf-8")
+    data = load_report_index()
+    assert data.get("corrupt") is True
+    assert data["runs"] == []
+    assert "unexpected" in (data.get("error") or "")
+
+
+def test_load_report_index_unexpected_shape_number(tmp_path, monkeypatch):
+    monkeypatch.setenv("RESEARCH_SWARM_REPORTS_DIR", str(tmp_path))
+    (tmp_path / "index.json").write_text("42", encoding="utf-8")
+    data = load_report_index()
+    assert data.get("corrupt") is True
+    assert data["runs"] == []
+
+
+def test_load_report_index_list_form_filters_non_dicts(tmp_path, monkeypatch):
+    monkeypatch.setenv("RESEARCH_SWARM_REPORTS_DIR", str(tmp_path))
+    (tmp_path / "index.json").write_text(
+        '[{"goal": "ok"}, "skip-me", 3, null, {"goal": "also"}]',
+        encoding="utf-8",
+    )
+    data = load_report_index()
+    assert data.get("corrupt") is not True
+    assert data["missing"] is False
+    assert data["count"] == 2
+    assert all(isinstance(r, dict) for r in data["runs"])
+
+
+def test_load_report_index_dict_runs_not_list(tmp_path, monkeypatch):
+    monkeypatch.setenv("RESEARCH_SWARM_REPORTS_DIR", str(tmp_path))
+    (tmp_path / "index.json").write_text(
+        '{"updated_at": "x", "runs": "not-a-list"}',
+        encoding="utf-8",
+    )
+    data = load_report_index()
+    assert data["missing"] is False
+    assert data["runs"] == []
+    assert data["count"] == 0
+
+
+def test_update_after_empty_index_creates_valid_file(tmp_path, monkeypatch):
+    monkeypatch.setenv("RESEARCH_SWARM_REPORTS_DIR", str(tmp_path))
+    (tmp_path / "index.json").write_text("", encoding="utf-8")
+    report = tmp_path / "r.md"
+    report.write_text("# body", encoding="utf-8")
+    idx = update_report_index(
+        path=report,
+        goal="from-empty",
+        status="completed",
+        n_src=1,
+        n_facts=0,
+        n_conf=0,
+        n_iter=2,
+        strategy="timestamp",
+    )
+    assert idx is not None
+    reloaded = load_report_index(idx)
+    assert reloaded.get("corrupt") is not True
+    assert reloaded["count"] == 1
+    assert reloaded["runs"][0]["goal"] == "from-empty"
+
+
+def test_update_after_corrupt_preserves_bak_contents(tmp_path, monkeypatch):
+    monkeypatch.setenv("RESEARCH_SWARM_REPORTS_DIR", str(tmp_path))
+    poison = "{definitely-not-json!!!"
+    (tmp_path / "index.json").write_text(poison, encoding="utf-8")
+    report = tmp_path / "r.md"
+    report.write_text("# body", encoding="utf-8")
+    idx = update_report_index(
+        path=report,
+        goal="after-corrupt",
+        status="completed",
+        n_src=0,
+        n_facts=1,
+        n_conf=0,
+        n_iter=1,
+        strategy="sequential",
+    )
+    assert idx is not None
+    bak = tmp_path / "index.json.bak"
+    assert bak.is_file()
+    assert bak.read_text(encoding="utf-8") == poison
+    reloaded = load_report_index(idx)
+    assert reloaded.get("corrupt") is not True
+    assert reloaded["count"] == 1
+    assert reloaded["runs"][0]["strategy"] == "sequential"
+
+
+def test_update_report_index_never_raises_on_bad_path(tmp_path, monkeypatch):
+    monkeypatch.setenv("RESEARCH_SWARM_REPORTS_DIR", str(tmp_path))
+    ghost = tmp_path / "nested" / "ghost.md"
+    result = update_report_index(
+        path=ghost,
+        goal="ghost",
+        status="failed",
+        n_src=0,
+        n_facts=0,
+        n_conf=0,
+        n_iter=0,
+        strategy="timestamp",
+    )
+    assert result is not None
+    assert result.is_file()
