@@ -29,11 +29,15 @@ From the provided web content, extract only clear, concrete facts that help answ
 Rules:
 1. Prefer specific, verifiable claims (numbers, dates, product names, feature lists, pricing tiers, comparisons).
 2. Every fact MUST include source_urls taken from the provided Source URL lines — never invent URLs.
-3. Set confidence between 0.5 and 0.95 based on how explicit the source is.
-4. Use a short category when useful (e.g. pricing, features, limits, company, comparison).
-5. Do not invent information. If the content is thin, return fewer facts.
-6. Avoid duplicate claims; merge near-duplicates into one fact with multiple source_urls when possible.
-7. Keep claim text concise (one sentence). Put detail in value as a short string
+3. Every fact MUST include an evidence field: a short verbatim quote (1-2 sentences max)
+   copied from the source markdown that supports the claim. Do not paraphrase in evidence.
+   If you cannot find a supporting quote, omit that fact entirely.
+4. Set confidence between 0.5 and 0.95 based on how explicit the source is.
+   Prefer higher confidence when the evidence quote is direct and unambiguous.
+5. Use a short category when useful (e.g. pricing, features, limits, company, comparison).
+6. Do not invent information. If the content is thin, return fewer facts.
+7. Avoid duplicate claims; merge near-duplicates into one fact with multiple source_urls when possible.
+8. Keep claim text concise (one sentence). Put detail in value as a short string
    (serialize numbers, short lists, or key points as plain text).
 """
 
@@ -57,13 +61,7 @@ def _pending_sources(sources: List[Source], already: Set[str]) -> List[Source]:
 
 
 def extractor_node(state: ResearchState) -> Command[Literal["supervisor"]]:
-    """
-    Extractor specialist (incremental).
-
-    Only processes sources that have markdown and whose URL is not yet in
-    ``extracted_urls``. After a successful LLM call, those URLs are recorded so
-    later extract turns skip them.
-    """
+    """Extractor specialist (incremental + claim-evidence pairing)."""
     sources = state.get("sources", [])
     existing_facts = list(state.get("extracted_facts", []))
     already = set(state.get("extracted_urls") or [])
@@ -112,16 +110,26 @@ def extractor_node(state: ResearchState) -> Command[Literal["supervisor"]]:
         result: ExtractionResult = structured.invoke(
             [SystemMessage(content=EXTRACTOR_SYSTEM), HumanMessage(content=human)]
         )
-        new_facts = _dedupe_facts(existing_facts, result.facts or [])
+        raw_facts = result.facts or []
+        grounded = [
+            f
+            for f in raw_facts
+            if (f.claim or "").strip()
+            and (f.evidence or "").strip()
+            and f.source_urls
+        ]
+        skipped_ungrounded = len(raw_facts) - len(grounded)
+        new_facts = _dedupe_facts(existing_facts, grounded)
         newly_extracted = [s.url for s in batch]
         log.info(
             "extracted %s new fact(s) from %s new source(s) "
-            "(pending=%s already=%s skipped_dup_claims=%s)",
+            "(pending=%s already=%s skipped_dup=%s ungrounded=%s)",
             len(new_facts),
             len(batch),
             len(pending),
             len(already),
-            len(result.facts or []) - len(new_facts),
+            len(grounded) - len(new_facts),
+            skipped_ungrounded,
         )
     except Exception as exc:
         errors.append(f"Extractor LLM call failed: {exc}")
@@ -135,7 +143,7 @@ def extractor_node(state: ResearchState) -> Command[Literal["supervisor"]]:
         "messages": [
             AIMessage(
                 content=(
-                    f"Extractor: produced {len(new_facts)} fact(s) from "
+                    f"Extractor: produced {len(new_facts)} grounded fact(s) from "
                     f"{len(batch)} new source(s) "
                     f"({len(pending) - len(batch)} still pending next turn)."
                 )

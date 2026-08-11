@@ -32,6 +32,10 @@ class ExtractedFact(BaseModel):
     source_urls: List[str]
     confidence: float = Field(default=0.7, ge=0.0, le=1.0)
     category: Optional[str] = None
+    evidence: Optional[str] = Field(
+        default=None,
+        description="Verbatim quote (1-2 sentences max) from the source text supporting the claim",
+    )
 
 
 class Conflict(BaseModel):

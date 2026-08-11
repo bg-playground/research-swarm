@@ -18,7 +18,7 @@ def synthesizer_node(state: ResearchState) -> Command[Literal["supervisor"]]:
     """
     Synthesizer specialist.
 
-    Generates a cited markdown report from the accumulated sources, facts, and conflicts.
+    Generates a cited markdown report from sources, facts (with evidence), and conflicts.
     Falls back to a structured template if the LLM call fails.
     """
     goal = state.get("goal", "Unknown research goal")
@@ -32,14 +32,26 @@ def synthesizer_node(state: ResearchState) -> Command[Literal["supervisor"]]:
         title = s.title or s.url
         source_lines.append(f"{i}. [{title}]({s.url}) (quality={s.quality_score:.2f})")
 
-    fact_lines = [f"- {f.claim}: {f.value} (conf={f.confidence:.2f})" for f in facts[:15]]
+    fact_lines = []
+    for f in facts[:15]:
+        line = (
+            f"- {f.claim}: {f.value} "
+            f"(conf={f.confidence:.2f}; urls={', '.join(f.source_urls[:2])})"
+        )
+        if f.evidence:
+            ev = f.evidence.strip().replace("\n", " ")
+            if len(ev) > 280:
+                ev = ev[:277] + "..."
+            line += f'\n  evidence: "{ev}"'
+        fact_lines.append(line)
     conflict_lines = [f"- ({c.severity}) {c.description}" for c in conflicts]
 
     context = (
         f"Goal: {goal}\n\n"
         f"Sources ({len(sources)}):\n" + "\n".join(source_lines) + "\n\n"
         f"Facts ({len(facts)}):\n" + "\n".join(fact_lines) + "\n\n"
-        f"Conflicts ({len(conflicts)}):\n" + ("\n".join(conflict_lines) if conflict_lines else "None")
+        f"Conflicts ({len(conflicts)}):\n"
+        + ("\n".join(conflict_lines) if conflict_lines else "None")
     )
 
     system = (
@@ -48,11 +60,16 @@ def synthesizer_node(state: ResearchState) -> Command[Literal["supervisor"]]:
         "Preferred structure:\n"
         "1. Title (H1)\n"
         "2. Executive summary (2–4 sentences)\n"
-        "3. Key findings (numbered or bulleted; cite sources inline when possible)\n"
+        "3. Key findings (numbered; each finding should cite a source URL and, "
+        "when evidence quotes are provided, briefly reflect that evidence)\n"
         "4. Gaps / caveats (if any)\n"
         "5. Sources (numbered list with titles and URLs)\n\n"
-        "Be honest about conflicts and thin evidence. Do not invent facts. "
-        "Prefer concrete claims over marketing language."
+        "Rules:\n"
+        "- Prefer facts that include an evidence quote; treat facts without evidence as weaker.\n"
+        "- Do not invent quotes or facts. You may lightly paraphrase claims, but do not "
+        "fabricate evidence text.\n"
+        "- Be honest about conflicts and thin coverage.\n"
+        "- Prefer concrete claims over marketing language."
     )
 
     report = None
@@ -96,12 +113,7 @@ def synthesizer_node(state: ResearchState) -> Command[Literal["supervisor"]]:
         "report": report,
         "structured_report": structured,
         "status": "completed",
-        "messages": [
-            AIMessage(
-                content=f"Synthesizer: produced report ({len(sources)} sources, {len(facts)} facts)."
-            )
-        ],
+        "messages": [AIMessage(content=f"Synthesizer: report ready ({len(report)} chars).")],
         "errors": errors,
     }
-
     return Command(goto="supervisor", update=updates)
