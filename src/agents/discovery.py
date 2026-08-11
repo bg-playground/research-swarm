@@ -1,4 +1,4 @@
-"""Discovery agent – finds candidate sources via Firecrawl Search (and optional Map)."""
+"""Discovery agent – finds candidate sources via Firecrawl Search (+ query rewrite & domain priors)."""
 
 from __future__ import annotations
 
@@ -11,16 +11,23 @@ from src.state import ResearchState, Source
 from src.tools.firecrawl_tools import search_web
 from src.utils.circuit_breaker import CircuitOpenError
 from src.utils.logging_setup import get_logger
+from src.utils.query_rewrite import build_search_queries
+from src.utils.source_ranking import apply_domain_priors
 
 log = get_logger("research_swarm.discovery")
+
+MAX_NEW_SOURCES = 8
+PER_QUERY_LIMIT = 5
 
 
 def discovery_node(state: ResearchState) -> Command[Literal["supervisor"]]:
     """
     Discovery specialist.
 
-    Uses Firecrawl Search to locate high-quality starting points for the research goal.
-    Gracefully degrades if the API key is missing or the call fails.
+    1. Expand the research goal into 1–3 targeted search queries (heuristics).
+    2. Run Firecrawl Search for each query.
+    3. Deduplicate, apply domain priors (boost docs/github, demote social/video), rank.
+    4. Return the best new sources to the supervisor.
     """
     goal = state.get("goal", "unknown goal")
     existing_sources = list(state.get("sources", []))
@@ -29,13 +36,45 @@ def discovery_node(state: ResearchState) -> Command[Literal["supervisor"]]:
 
     new_sources: list[Source] = []
     message = ""
+    queries = build_search_queries(goal, max_queries=3)
 
     try:
-        results = search_web(goal, limit=6, scrape=False)
-        unique = [s for s in results if s.url not in existing_urls]
-        new_sources.extend(unique)
-        message = f"Discovery: found {len(unique)} new source(s) via Firecrawl Search."
-        log.info("search ok new_sources=%s total=%s", len(unique), len(existing_sources) + len(unique))
+        collected: list[Source] = []
+        for q in queries:
+            try:
+                batch = search_web(q, limit=PER_QUERY_LIMIT, scrape=False)
+                collected.extend(batch)
+                log.info("search query=%r hits=%s", q[:80], len(batch))
+            except CircuitOpenError:
+                raise
+            except ValueError:
+                raise
+            except Exception as exc:
+                errors.append(f"Discovery query failed ({q[:60]}...): {exc}")
+                log.warning("query failed q=%r err=%s", q[:80], exc)
+
+        seen: set[str] = set()
+        unique: list[Source] = []
+        for s in collected:
+            if not s.url or s.url in existing_urls or s.url in seen:
+                continue
+            seen.add(s.url)
+            unique.append(s)
+
+        ranked = apply_domain_priors(unique)
+        new_sources = ranked[:MAX_NEW_SOURCES]
+
+        message = (
+            f"Discovery: {len(queries)} query variant(s) → "
+            f"{len(unique)} unique hit(s) → kept top {len(new_sources)} after domain ranking."
+        )
+        log.info(
+            "search ok queries=%s unique=%s kept=%s total=%s",
+            len(queries),
+            len(unique),
+            len(new_sources),
+            len(existing_sources) + len(new_sources),
+        )
     except ValueError as exc:
         errors.append(str(exc))
         message = (
