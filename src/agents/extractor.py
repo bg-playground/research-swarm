@@ -9,10 +9,13 @@ from langgraph.types import Command
 from pydantic import BaseModel, Field
 
 from src.config import get_chat_model
-from src.state import ExtractedFact, ResearchState
+from src.state import ExtractedFact, ResearchState, Source
 from src.utils.logging_setup import get_logger
 
 log = get_logger("research_swarm.extractor")
+
+MAX_SOURCES_PER_TURN = 5
+SNIPPET_CHARS = 3000
 
 
 class ExtractionResult(BaseModel):
@@ -36,7 +39,6 @@ Rules:
 
 
 def _dedupe_facts(existing: List[ExtractedFact], new: List[ExtractedFact]) -> List[ExtractedFact]:
-    """Drop new facts whose claim is already present (case-insensitive)."""
     seen: Set[str] = {f.claim.strip().lower()[:120] for f in existing}
     out: List[ExtractedFact] = []
     for f in new:
@@ -48,34 +50,44 @@ def _dedupe_facts(existing: List[ExtractedFact], new: List[ExtractedFact]) -> Li
     return out
 
 
+def _pending_sources(sources: List[Source], already: Set[str]) -> List[Source]:
+    pending = [s for s in sources if s.markdown and s.url not in already]
+    pending.sort(key=lambda s: s.quality_score, reverse=True)
+    return pending
+
+
 def extractor_node(state: ResearchState) -> Command[Literal["supervisor"]]:
     """
-    Extractor specialist.
+    Extractor specialist (incremental).
 
-    Uses an LLM over the collected markdown to produce typed ExtractedFact objects.
-    Falls back gracefully when there is insufficient content or the LLM fails.
+    Only processes sources that have markdown and whose URL is not yet in
+    ``extracted_urls``. After a successful LLM call, those URLs are recorded so
+    later extract turns skip them.
     """
     sources = state.get("sources", [])
     existing_facts = list(state.get("extracted_facts", []))
+    already = set(state.get("extracted_urls") or [])
     goal = state.get("goal", "unknown")
     errors = list(state.get("errors", []))
 
-    contentful = [s for s in sources if s.markdown]
+    pending = _pending_sources(sources, already)
 
-    if not contentful:
+    if not pending:
+        contentful = sum(1 for s in sources if s.markdown)
+        msg = (
+            "Extractor: no new sources to process "
+            f"(contentful={contentful}, already_extracted={len(already)}). Skipping."
+        )
+        log.info("incremental skip contentful=%s already=%s", contentful, len(already))
         return Command(
             goto="supervisor",
-            update={
-                "messages": [
-                    AIMessage(content="Extractor: no sources with markdown content. Skipping.")
-                ]
-            },
+            update={"messages": [AIMessage(content=msg)]},
         )
 
-    ranked = sorted(contentful, key=lambda s: s.quality_score, reverse=True)
+    batch = pending[:MAX_SOURCES_PER_TURN]
     context_parts = []
-    for s in ranked[:5]:
-        snippet = (s.markdown or "")[:3000]
+    for s in batch:
+        snippet = (s.markdown or "")[:SNIPPET_CHARS]
         context_parts.append(
             f"### Source: {s.title or s.url}\nURL: {s.url}\nQuality: {s.quality_score:.2f}\n\n{snippet}"
         )
@@ -89,10 +101,11 @@ def extractor_node(state: ResearchState) -> Command[Literal["supervisor"]]:
             if existing_facts
             else "(none yet)"
         )
-        + f"\n\nWeb content:\n{context}"
+        + f"\n\nWeb content (new sources only):\n{context}"
     )
 
     new_facts: List[ExtractedFact] = []
+    newly_extracted: List[str] = []
     try:
         llm = get_chat_model(temperature=0)
         structured = llm.with_structured_output(ExtractionResult, method="function_calling")
@@ -100,22 +113,32 @@ def extractor_node(state: ResearchState) -> Command[Literal["supervisor"]]:
             [SystemMessage(content=EXTRACTOR_SYSTEM), HumanMessage(content=human)]
         )
         new_facts = _dedupe_facts(existing_facts, result.facts or [])
+        newly_extracted = [s.url for s in batch]
         log.info(
-            "extracted %s new fact(s) from %s source(s) (skipped %s duplicates)",
+            "extracted %s new fact(s) from %s new source(s) "
+            "(pending=%s already=%s skipped_dup_claims=%s)",
             len(new_facts),
-            len(ranked[:5]),
+            len(batch),
+            len(pending),
+            len(already),
             len(result.facts or []) - len(new_facts),
         )
     except Exception as exc:
         errors.append(f"Extractor LLM call failed: {exc}")
         log.exception("extractor LLM failed")
         new_facts = []
+        newly_extracted = []
 
     updates = {
         "extracted_facts": existing_facts + new_facts,
+        "extracted_urls": list(already) + newly_extracted,
         "messages": [
             AIMessage(
-                content=f"Extractor: produced {len(new_facts)} fact(s) from {len(contentful)} source(s)."
+                content=(
+                    f"Extractor: produced {len(new_facts)} fact(s) from "
+                    f"{len(batch)} new source(s) "
+                    f"({len(pending) - len(batch)} still pending next turn)."
+                )
             )
         ],
         "errors": errors,
