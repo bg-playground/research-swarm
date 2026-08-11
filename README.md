@@ -29,7 +29,7 @@ Most “research agents” are either a single ReAct loop that drifts, or a heav
 | **Good for** | Competitive intel, product / landscape research, docs deep-dives, source-backed briefings |
 | **Not for** | Bulk site scraping, authenticated browser flows (yet), long-running monitors |
 
-Resilience is built in: circuit breaker, rate-limit backoff, gatherer retry, concurrency cap (3 scrapes/turn).
+Resilience is built in: circuit breaker, rate-limit backoff, gatherer retry, concurrency cap (5 scrapes/turn), disk URL cache, and claim–evidence pairing.
 
 ---
 
@@ -66,21 +66,55 @@ Or after install: `research-swarm "Your research goal"` · `research-swarm --hel
 ## What a run looks like
 
 ```text
-🐝  research-swarm
-────────────────────────────────────────
-Goal            Summarize core concepts…
-Max iterations  8
-────────────────────────────────────────
-  discovery   → 6 sources
-  gatherer    → 3 scraped
-  extractor   → 5 facts
-  verifier    → 0 conflicts
-  synthesizer → report ready
-────────────────────────────────────────
-✓ completed · 6 iterations · 6 sources · 5 facts
+research-swarm
+========================================================
+  Goal From docs.firecrawl.dev, summarize search, scrape, crawl…
+  Max iterations 8
+========================================================
+  discovery  → 8 ranked sources (query rewrite + domain priors)
+  gatherer   → 5 scraped (cache hits on re-runs)
+  extractor  → grounded facts with evidence quotes
+  gatherer   → remaining sources
+  extractor  → incremental facts only
+  synthesizer → cited report + citation graph
+--------------------------------------------------------
+  [completed] | 7 iterations | 8 sources | 9 facts | 0 conflicts
 ```
 
-Reports are markdown: executive summary, key findings, sources, gaps.
+Reports are markdown: executive summary, **key findings with evidence**, gaps, sources, and a **Mermaid citation graph**.
+
+---
+
+## Example output (excerpt)
+
+Goal: *From docs.firecrawl.dev, summarize search, scrape, crawl, map, and interact for AI agent builders*
+
+**Key finding (grounded):**
+
+> **Scraping API** — Firecrawl offers a scrape endpoint for a single URL with optional LLM extraction.  
+> Evidence: *"Scrape a single URL and optionally extract information using an LLM."*  
+> Source: [docs.firecrawl.dev/api-reference/endpoint/scrape](https://docs.firecrawl.dev/api-reference/endpoint/scrape)
+
+**Citation graph** (auto-appended to every report; renders on GitHub):
+
+```mermaid
+flowchart LR
+  S1["Scrape - Firecrawl Docs"]
+  S2["Build with AI | Firecrawl"]
+  S3["Make - Firecrawl Docs"]
+  F1("Scraping API extracts via LLM")
+  F2("FirecrawlTools bundles search/scrape")
+  F3("Make: crawl, extract, map, search")
+  S1 --> F1
+  S2 --> F2
+  S3 --> F3
+  classDef source fill:#1e293b,stroke:#38bdf8,color:#e2e8f0
+  classDef fact fill:#0f766e,stroke:#5eead4,color:#ecfdf5
+  class S1,S2,S3 source
+  class F1,F2,F3 fact
+```
+
+Dark boxes = sources · Teal nodes = grounded facts linked by URL.
 
 ---
 
@@ -94,6 +128,8 @@ Reports are markdown: executive summary, key findings, sources, gaps.
 | `RESEARCH_SWARM_MODEL` | No | Default `gpt-4o-mini` |
 | `RESEARCH_SWARM_TEMPERATURE` | No | Default `0` |
 | `RESEARCH_SWARM_LOG_LEVEL` | No | `DEBUG` / `INFO` / … |
+| `RESEARCH_SWARM_CACHE_TTL_HOURS` | No | Scrape cache TTL (default `24`) |
+| `RESEARCH_SWARM_CACHE_DISABLED` | No | Set `1` to disable disk cache |
 | `LANGCHAIN_TRACING_V2` | No | Set `true` + `LANGCHAIN_API_KEY` for LangSmith |
 
 ---
@@ -104,7 +140,7 @@ Reports are markdown: executive summary, key findings, sources, gaps.
 src/
 ├── graph.py · state.py · main.py · config.py
 ├── tools/firecrawl_tools.py
-├── utils/circuit_breaker.py · logging_setup.py
+├── utils/circuit_breaker · url_cache · citation_graph · logging
 └── agents/  supervisor · discovery · gatherer · extractor · verifier · synthesizer
 examples/   01_competitor_pricing · 02_oss_landscape · 03_docs_deep_dive
 tests/      smoke tests (no API keys required)
