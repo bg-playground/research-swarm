@@ -1,6 +1,6 @@
 """Tests for CLI report export helper."""
 
-from src.main import _write_report_files
+from src.main import _default_report_path, _slugify_goal, _write_report_files
 
 
 def test_write_report_files(tmp_path):
@@ -21,3 +21,15 @@ def test_write_report_files(tmp_path):
     assert "research-swarm export" in text
     assert "# Hello" in text
     assert any(p.endswith(".json") for p in paths)
+
+
+def test_slugify_goal():
+    assert "firecrawl" in _slugify_goal("From docs.firecrawl.dev, summarize APIs!")
+    assert _slugify_goal("@@@") == "research"
+
+
+def test_default_report_path_under_reports(tmp_path, monkeypatch):
+    monkeypatch.setenv("RESEARCH_SWARM_REPORTS_DIR", str(tmp_path / "my-reports"))
+    path = _default_report_path("Summarize Firecrawl scrape API")
+    assert "my-reports" in path.replace("\\", "/")
+    assert path.endswith(".md")

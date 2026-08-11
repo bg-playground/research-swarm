@@ -34,7 +34,6 @@ S = _Style()
 
 
 def _safe_print(text: str = "") -> None:
-    """Print without crashing on narrow Windows encodings."""
     try:
         print(text)
     except UnicodeEncodeError:
@@ -55,12 +54,14 @@ Examples:
   python -m src.main "Compare Firecrawl and Browserbase for LLM agents"
   research-swarm "Map open-source web data APIs for AI agents"
   python -m src.main -o report.md "Summarize Firecrawl docs for agent builders"
+  python -m src.main --no-save "Quick run without writing a file"
   python -m src.main --max-iterations 10 --json -o out.md "Your goal"
 
 Environment:
   OPENAI_API_KEY      Required for supervisor / extractor / synthesizer
   FIRECRAWL_API_KEY   Required for live web discovery & scraping
   FIRECRAWL_API_URL   Optional (self-hosted Firecrawl)
+  RESEARCH_SWARM_REPORTS_DIR  Optional (default: ./reports)
   RESEARCH_SWARM_LOG_LEVEL  Optional (DEBUG/INFO/WARNING)
   LANGCHAIN_TRACING_V2      Optional (true to enable LangSmith)
   NO_COLOR                  Disable ANSI colors
@@ -87,7 +88,12 @@ Environment:
         "-o",
         "--output",
         metavar="PATH",
-        help="Write the markdown report to PATH (UTF-8). Parent dirs are created if needed.",
+        help="Write the markdown report to PATH (UTF-8). Overrides automatic reports/ path.",
+    )
+    parser.add_argument(
+        "--no-save",
+        action="store_true",
+        help="Do not write a report file (default is to auto-save under reports/).",
     )
     parser.add_argument(
         "--check",
@@ -95,6 +101,32 @@ Environment:
         help="Only check environment / keys and exit (no research run)",
     )
     return parser
+
+
+def _slugify_goal(goal: str, max_len: int = 48) -> str:
+    import re
+
+    text = (goal or "research").lower().strip()
+    text = re.sub(r"[^a-z0-9]+", "-", text)
+    text = text.strip("-") or "research"
+    return text[:max_len].rstrip("-")
+
+
+def _reports_dir():
+    from pathlib import Path
+
+    raw = (os.getenv("RESEARCH_SWARM_REPORTS_DIR") or "").strip()
+    if raw:
+        return Path(raw).expanduser()
+    return Path.cwd() / "reports"
+
+
+def _default_report_path(goal: str) -> str:
+    from datetime import datetime
+
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    slug = _slugify_goal(goal)
+    return str(_reports_dir() / f"{stamp}-{slug}.md")
 
 
 def _write_report_files(
@@ -109,7 +141,6 @@ def _write_report_files(
     n_conf: int,
     n_iter: int | None,
 ) -> list[str]:
-    """Write markdown report (and optional JSON sidecar). Returns paths written."""
     from pathlib import Path
 
     written: list[str] = []
@@ -150,10 +181,8 @@ def _write_report_files(
 
 def _preflight() -> list[str]:
     issues: list[str] = []
-
     openai_key = os.getenv("OPENAI_API_KEY", "").strip()
     firecrawl_key = os.getenv("FIRECRAWL_API_KEY", "").strip()
-
     if not openai_key or openai_key.startswith("sk-..."):
         issues.append(
             "OPENAI_API_KEY is missing or still a placeholder. "
@@ -164,7 +193,6 @@ def _preflight() -> list[str]:
             "FIRECRAWL_API_KEY is missing or still a placeholder. "
             "Discovery and gatherer will soft-fail without live web access."
         )
-
     return issues
 
 
@@ -278,9 +306,15 @@ def main(argv: list[str] | None = None) -> int:
             f"\n{S.dim}(No report produced - check errors / keys / iterations.){S.reset}"
         )
 
+    output_path: str | None = None
     if args.output:
+        output_path = args.output
+    elif not args.no_save:
+        output_path = _default_report_path(goal)
+
+    if output_path:
         written = _write_report_files(
-            path=args.output,
+            path=output_path,
             report=report,
             structured=final_state.get("structured_report") if args.json else None,
             goal=goal,
@@ -294,7 +328,7 @@ def main(argv: list[str] | None = None) -> int:
             for p in written:
                 _safe_print(f"{S.green}Wrote{S.reset} {p}")
         else:
-            _safe_print(f"{S.yellow}No report content to write to {args.output}{S.reset}")
+            _safe_print(f"{S.yellow}No report content to write to {output_path}{S.reset}")
 
     if args.json:
         structured = final_state.get("structured_report")
