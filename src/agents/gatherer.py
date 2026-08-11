@@ -17,19 +17,14 @@ from src.utils.logging_setup import get_logger
 
 log = get_logger("research_swarm.gatherer")
 
-# Safety / cost limit – easy to raise later
-MAX_SCRAPES_PER_TURN = 3
-MAX_WORKERS = 3
+MAX_SCRAPES_PER_TURN = 5
+MAX_WORKERS = 5
 
-# Short backoff before the gatherer-level retry pass
-RETRY_BASE_DELAY = 1.5  # seconds
+RETRY_BASE_DELAY = 1.5
 RETRY_JITTER = 0.75
 
 
 def _scrape_one(src: Source) -> Tuple[str, Optional[Source], Optional[str]]:
-    """
-    Worker helper. Returns (url, result_or_None, error_message_or_None).
-    """
     try:
         result = scrape_url(src.url, only_main_content=True)
         if result and result.markdown:
@@ -54,11 +49,6 @@ def _run_batch(
     updated_by_url: dict[str, Source],
     errors: List[str],
 ) -> Tuple[int, int, bool, List[Source]]:
-    """
-    Run a parallel scrape batch.
-
-    Returns (scraped_count, failed_count, api_key_missing, failed_sources).
-    """
     scraped_count = 0
     failed_count = 0
     api_key_missing = False
@@ -77,9 +67,9 @@ def _run_batch(
             if err and (err.startswith("API_KEY_MISSING::") or err.startswith("CIRCUIT_OPEN::")):
                 api_key_missing = True
                 errors.append(err.split("::", 1)[1])
-                for f in futures:
-                    f.cancel()
-                break
+                failed_count += 1
+                failed_sources.append(src)
+                continue
 
             if result is not None:
                 updated_by_url[url] = result
@@ -88,21 +78,12 @@ def _run_batch(
                 failed_count += 1
                 failed_sources.append(src)
                 if err:
-                    errors.append(f"Gatherer: {err}")
+                    errors.append(err)
 
     return scraped_count, failed_count, api_key_missing, failed_sources
 
 
 def gatherer_node(state: ResearchState) -> Command[Literal["supervisor"]]:
-    """
-    Gatherer specialist.
-
-    Scrapes the most promising sources that still lack markdown content,
-    running up to MAX_SCRAPES_PER_TURN requests in parallel.
-    Failed URLs get one additional retry pass within the same turn
-    after a short exponential-style backoff.
-    Gracefully degrades if the API key is missing or the circuit is open.
-    """
     sources = list(state.get("sources", []))
     errors = list(state.get("errors", []))
 
@@ -110,107 +91,53 @@ def gatherer_node(state: ResearchState) -> Command[Literal["supervisor"]]:
         return Command(
             goto="supervisor",
             update={
-                "messages": [
-                    AIMessage(content="Gatherer: no sources available yet. Returning to supervisor.")
-                ],
-                "errors": errors + ["Gatherer called with empty sources list"],
+                "messages": [AIMessage(content="Gatherer: no sources to scrape.")],
+                "errors": errors,
             },
         )
 
-    candidates = sorted(
-        [s for s in sources if not s.markdown],
-        key=lambda s: s.quality_score,
-        reverse=True,
-    )
+    pending = [s for s in sources if not s.markdown]
+    pending.sort(key=lambda s: s.quality_score, reverse=True)
+    batch = pending[:MAX_SCRAPES_PER_TURN]
 
-    to_scrape = candidates[:MAX_SCRAPES_PER_TURN]
-
-    if not to_scrape:
-        return Command(
-            goto="supervisor",
-            update={
-                "messages": [
-                    AIMessage(content="Gatherer: all current sources already have content.")
-                ]
-            },
-        )
-
-    updated_by_url: dict[str, Source] = {s.url: s for s in sources}
-
-    scraped_count, failed_count, api_key_missing, failed_sources = _run_batch(
-        to_scrape, updated_by_url, errors
-    )
-
-    if api_key_missing:
+    if not batch:
         return Command(
             goto="supervisor",
             update={
                 "messages": [
                     AIMessage(
-                        content=(
-                            "Gatherer: FIRECRAWL_API_KEY missing or circuit open. "
-                            "Skipping live scrapes."
-                        )
+                        content=f"Gatherer: all {len(sources)} source(s) already have content."
                     )
                 ],
                 "errors": errors,
             },
         )
 
-    retried_count = 0
-    if failed_sources:
-        retry_batch = [
-            s
-            for s in failed_sources
-            if s.url in updated_by_url and not updated_by_url[s.url].markdown
-        ]
-        if retry_batch:
-            delay = RETRY_BASE_DELAY + random.uniform(0, RETRY_JITTER)
-            time.sleep(delay)
+    updated_by_url = {s.url: s for s in sources}
+    scraped, failed, key_missing, failed_sources = _run_batch(batch, updated_by_url, errors)
 
-            extra_scraped, extra_failed, api_key_missing, _ = _run_batch(
-                retry_batch, updated_by_url, errors
-            )
-            retried_count = extra_scraped
-            scraped_count += extra_scraped
-            failed_count = extra_failed
+    retried = 0
+    if failed_sources and not key_missing:
+        delay = RETRY_BASE_DELAY + random.uniform(0, RETRY_JITTER)
+        time.sleep(delay)
+        s2, f2, key_missing2, still_failed = _run_batch(failed_sources, updated_by_url, errors)
+        scraped += s2
+        failed = f2
+        retried = len(failed_sources)
+        key_missing = key_missing or key_missing2
 
-            if api_key_missing:
-                return Command(
-                    goto="supervisor",
-                    update={
-                        "messages": [
-                            AIMessage(
-                                content=(
-                                    "Gatherer: FIRECRAWL_API_KEY missing or circuit open. "
-                                    "Skipping live scrapes."
-                                )
-                            )
-                        ],
-                        "errors": errors,
-                    },
-                )
-
-    updated_sources = list(updated_by_url.values())
-
-    msg = f"Gatherer: successfully scraped {scraped_count} source(s) in parallel"
-    if retried_count:
-        msg += f" (including {retried_count} after backoff retry)"
-    if failed_count:
-        msg += f" ({failed_count} still failed)"
-
-    log.info(
-        "scraped=%s retried=%s failed=%s total_sources=%s",
-        scraped_count,
-        retried_count,
-        failed_count,
-        len(updated_sources),
+    new_sources = list(updated_by_url.values())
+    msg = (
+        f"Gatherer: scraped={scraped} retried={retried} failed={failed} "
+        f"total_sources={len(new_sources)}"
     )
+    log.info("scraped=%s retried=%s failed=%s total_sources=%s", scraped, retried, failed, len(new_sources))
 
-    updates = {
-        "sources": updated_sources,
-        "messages": [AIMessage(content=msg)],
-        "errors": errors,
-    }
-
-    return Command(goto="supervisor", update=updates)
+    return Command(
+        goto="supervisor",
+        update={
+            "sources": new_sources,
+            "messages": [AIMessage(content=msg)],
+            "errors": errors,
+        },
+    )
