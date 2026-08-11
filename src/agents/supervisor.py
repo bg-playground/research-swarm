@@ -5,10 +5,10 @@ from __future__ import annotations
 from typing import Literal, Optional
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
-from langchain_openai import ChatOpenAI
 from langgraph.types import Command
 from pydantic import BaseModel, Field
 
+from src.config import get_chat_model
 from src.state import ResearchPlan, ResearchState
 from src.utils.logging_setup import get_logger
 
@@ -63,7 +63,6 @@ Current iteration: {iteration} / {max_iterations}
 
 
 def _build_supervisor_messages(state: ResearchState) -> list:
-    """Construct the message list for the supervisor LLM call."""
     goal = state.get("goal", "No goal provided")
     iteration = state.get("iteration", 0)
     max_iterations = state.get("max_iterations", 12)
@@ -95,7 +94,6 @@ def _build_supervisor_messages(state: ResearchState) -> list:
         summary_parts.append(f"Recent errors: {errors[-3:]}")
 
     human_content = "Current state summary:\n" + "\n".join(f"- {p}" for p in summary_parts)
-
     recent_messages = state.get("messages", [])[-4:]
 
     messages = [SystemMessage(content=system), HumanMessage(content=human_content)]
@@ -106,12 +104,6 @@ def _build_supervisor_messages(state: ResearchState) -> list:
 def supervisor_node(state: ResearchState) -> Command[Literal[
     "discovery", "gatherer", "extractor", "verifier", "synthesizer", "__end__"
 ]]:
-    """
-    Supervisor node.
-
-    Examines ResearchState, decides the next specialist (or finish),
-    optionally performs light re-planning, and returns a Command.
-    """
     iteration = state.get("iteration", 0)
     max_iterations = state.get("max_iterations", 12)
 
@@ -126,7 +118,7 @@ def supervisor_node(state: ResearchState) -> Command[Literal[
             },
         )
 
-    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+    llm = get_chat_model(temperature=0)
     structured_llm = llm.with_structured_output(SupervisorDecision)
 
     messages = _build_supervisor_messages(state)
