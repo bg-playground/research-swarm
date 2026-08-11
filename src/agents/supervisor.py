@@ -1,0 +1,160 @@
+"""Supervisor agent – plans and routes work to specialist agents."""
+
+from __future__ import annotations
+
+from typing import Literal, Optional
+
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_openai import ChatOpenAI
+from langgraph.types import Command
+from pydantic import BaseModel, Field
+
+from src.state import ResearchPlan, ResearchState
+
+
+# ---------- Structured decision model ----------
+
+class SupervisorDecision(BaseModel):
+    """Structured output the supervisor must produce."""
+
+    reasoning: str = Field(
+        description="Brief explanation of the current situation and why this decision was made."
+    )
+    next_agent: Literal[
+        "discovery", "gatherer", "extractor", "verifier", "synthesizer", "FINISH"
+    ] = Field(description="Which specialist should run next, or FINISH if research is complete.")
+    updated_plan: Optional[ResearchPlan] = Field(
+        default=None,
+        description="Optional light re-plan. Only provide when subtasks need adjustment.",
+    )
+    status_note: Optional[str] = Field(
+        default=None,
+        description="Short status update for logging / human observation.",
+    )
+
+
+# ---------- Prompt ----------
+
+SUPERVISOR_SYSTEM_PROMPT = """You are the Supervisor of a multi-agent research swarm.
+
+Your job is to examine the current research state and decide the single best next action.
+
+Available specialists:
+- discovery  → Search the web and map site structures (use early to find good sources)
+- gatherer   → Scrape or crawl pages to obtain clean markdown content
+- extractor  → Pull structured facts / JSON from collected content
+- verifier   → Cross-check facts, detect conflicts, score source quality
+- synthesizer → Write the final cited report
+- FINISH     → Research is complete enough; stop the loop
+
+Rules:
+1. Prefer a logical sequence: discovery → gatherer → extractor → verifier → synthesizer.
+2. You may jump ahead or go back if the state clearly requires it (e.g. missing sources → discovery).
+3. Light re-planning is allowed: you may add, remove, or re-order subtasks when it clearly improves the research.
+4. Never invent facts. Only route.
+5. Stop (FINISH) when:
+   - The original goal is adequately answered, or
+   - max_iterations is approaching and we have usable results, or
+   - Further work would add little value.
+6. Keep reasoning concise (2-4 sentences).
+
+Current research goal: {goal}
+Current iteration: {iteration} / {max_iterations}
+"""
+
+
+def _build_supervisor_messages(state: ResearchState) -> list:
+    """Construct the message list for the supervisor LLM call."""
+    goal = state.get("goal", "No goal provided")
+    iteration = state.get("iteration", 0)
+    max_iterations = state.get("max_iterations", 12)
+
+    system = SUPERVISOR_SYSTEM_PROMPT.format(
+        goal=goal,
+        iteration=iteration,
+        max_iterations=max_iterations,
+    )
+
+    # Summarize current knowledge for the prompt
+    plan = state.get("plan")
+    sources = state.get("sources", [])
+    facts = state.get("extracted_facts", [])
+    conflicts = state.get("conflicts", [])
+    errors = state.get("errors", [])
+
+    summary_parts = []
+    if plan:
+        summary_parts.append(f"Plan goal: {plan.goal}")
+        summary_parts.append(f"Subtasks: {plan.subtasks}")
+        summary_parts.append(f"Completed: {plan.completed_subtasks}")
+        if plan.notes:
+            summary_parts.append(f"Plan notes: {plan.notes}")
+
+    summary_parts.append(f"Sources collected: {len(sources)}")
+    summary_parts.append(f"Extracted facts: {len(facts)}")
+    summary_parts.append(f"Conflicts detected: {len(conflicts)}")
+    if errors:
+        summary_parts.append(f"Recent errors: {errors[-3:]}")
+
+    human_content = "Current state summary:\n" + "\n".join(f"- {p}" for p in summary_parts)
+
+    # Include the last few messages for conversational context
+    recent_messages = state.get("messages", [])[-4:]
+
+    messages = [SystemMessage(content=system), HumanMessage(content=human_content)]
+    messages.extend(recent_messages)
+    return messages
+
+
+# ---------- Supervisor node ----------
+
+def supervisor_node(state: ResearchState) -> Command[Literal[
+    "discovery", "gatherer", "extractor", "verifier", "synthesizer", "__end__"
+]]:
+    """
+    Supervisor node.
+
+    Examines ResearchState, decides the next specialist (or finish),
+    optionally performs light re-planning, and returns a Command.
+    """
+    iteration = state.get("iteration", 0)
+    max_iterations = state.get("max_iterations", 12)
+
+    # Hard safety stop
+    if iteration >= max_iterations:
+        return Command(
+            goto="__end__",
+            update={
+                "next_agent": "FINISH",
+                "status": "completed",
+                "messages": [AIMessage(content="Max iterations reached. Stopping research.")],
+            },
+        )
+
+    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+    structured_llm = llm.with_structured_output(SupervisorDecision)
+
+    messages = _build_supervisor_messages(state)
+    decision: SupervisorDecision = structured_llm.invoke(messages)
+
+    # Prepare state updates
+    updates: dict = {
+        "next_agent": decision.next_agent,
+        "iteration": iteration + 1,
+        "messages": [
+            AIMessage(
+                content=f"Supervisor: {decision.reasoning}"
+                + (f" | Note: {decision.status_note}" if decision.status_note else "")
+            )
+        ],
+    }
+
+    if decision.updated_plan is not None:
+        updates["plan"] = decision.updated_plan
+
+    # Map FINISH → LangGraph end
+    if decision.next_agent == "FINISH":
+        updates["status"] = "completed"
+        return Command(goto="__end__", update=updates)
+
+    return Command(goto=decision.next_agent, update=updates)
