@@ -1,9 +1,9 @@
-"""Gatherer agent – scrapes pages for clean markdown via Firecrawl (parallel)."""
+"""Gatherer agent – scrapes pages for clean markdown via Firecrawl (parallel + retry)."""
 
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Literal, Optional, Tuple
+from typing import List, Literal, Optional, Tuple
 
 from langchain_core.messages import AIMessage
 from langgraph.types import Command
@@ -38,13 +38,58 @@ def _scrape_one(src: Source) -> Tuple[str, Optional[Source], Optional[str]]:
         return src.url, None, f"scrape failed for {src.url}: {exc}"
 
 
+def _run_batch(
+    batch: List[Source],
+    updated_by_url: dict[str, Source],
+    errors: List[str],
+) -> Tuple[int, int, bool, List[Source]]:
+    """
+    Run a parallel scrape batch.
+
+    Returns (scraped_count, failed_count, api_key_missing, failed_sources).
+    """
+    scraped_count = 0
+    failed_count = 0
+    api_key_missing = False
+    failed_sources: List[Source] = []
+
+    if not batch:
+        return 0, 0, False, []
+
+    with ThreadPoolExecutor(max_workers=min(MAX_WORKERS, len(batch))) as executor:
+        futures = {executor.submit(_scrape_one, src): src for src in batch}
+
+        for future in as_completed(futures):
+            src = futures[future]
+            url, result, err = future.result()
+
+            if err and err.startswith("API_KEY_MISSING::"):
+                api_key_missing = True
+                errors.append(err.split("::", 1)[1])
+                for f in futures:
+                    f.cancel()
+                break
+
+            if result is not None:
+                updated_by_url[url] = result
+                scraped_count += 1
+            else:
+                failed_count += 1
+                failed_sources.append(src)
+                if err:
+                    errors.append(f"Gatherer: {err}")
+
+    return scraped_count, failed_count, api_key_missing, failed_sources
+
+
 def gatherer_node(state: ResearchState) -> Command[Literal["supervisor"]]:
     """
     Gatherer specialist.
 
     Scrapes the most promising sources that still lack markdown content,
-    running up to MAX_SCRAPES_PER_TURN requests in parallel via a thread pool.
-    Gracefully degrades if the API key is missing or individual scrapes fail.
+    running up to MAX_SCRAPES_PER_TURN requests in parallel.
+    Failed URLs get one additional retry pass within the same turn.
+    Gracefully degrades if the API key is missing.
     """
     sources = list(state.get("sources", []))
     errors = list(state.get("errors", []))
@@ -80,32 +125,11 @@ def gatherer_node(state: ResearchState) -> Command[Literal["supervisor"]]:
         )
 
     updated_by_url: dict[str, Source] = {s.url: s for s in sources}
-    scraped_count = 0
-    failed_count = 0
-    api_key_missing = False
 
-    # Parallel scrape
-    with ThreadPoolExecutor(max_workers=min(MAX_WORKERS, len(to_scrape))) as executor:
-        futures = {executor.submit(_scrape_one, src): src for src in to_scrape}
-
-        for future in as_completed(futures):
-            url, result, err = future.result()
-
-            if err and err.startswith("API_KEY_MISSING::"):
-                api_key_missing = True
-                errors.append(err.split("::", 1)[1])
-                # Cancel remaining work – no point continuing without a key
-                for f in futures:
-                    f.cancel()
-                break
-
-            if result is not None:
-                updated_by_url[url] = result
-                scraped_count += 1
-            else:
-                failed_count += 1
-                if err:
-                    errors.append(f"Gatherer: {err}")
+    # ---- First pass ----
+    scraped_count, failed_count, api_key_missing, failed_sources = _run_batch(
+        to_scrape, updated_by_url, errors
+    )
 
     if api_key_missing:
         return Command(
@@ -123,11 +147,42 @@ def gatherer_node(state: ResearchState) -> Command[Literal["supervisor"]]:
             },
         )
 
+    # ---- Retry pass (one extra attempt for failures) ----
+    retried_count = 0
+    if failed_sources:
+        # Only retry the ones that still lack content
+        retry_batch = [s for s in failed_sources if s.url in updated_by_url and not updated_by_url[s.url].markdown]
+        if retry_batch:
+            extra_scraped, extra_failed, api_key_missing, _ = _run_batch(
+                retry_batch, updated_by_url, errors
+            )
+            retried_count = extra_scraped
+            scraped_count += extra_scraped
+            failed_count = extra_failed  # remaining failures after retry
+
+            if api_key_missing:
+                return Command(
+                    goto="supervisor",
+                    update={
+                        "messages": [
+                            AIMessage(
+                                content=(
+                                    "Gatherer: FIRECRAWL_API_KEY is not set. "
+                                    "Skipping live scrapes."
+                                )
+                            )
+                        ],
+                        "errors": errors,
+                    },
+                )
+
     updated_sources = list(updated_by_url.values())
 
     msg = f"Gatherer: successfully scraped {scraped_count} source(s) in parallel"
+    if retried_count:
+        msg += f" (including {retried_count} on retry)"
     if failed_count:
-        msg += f" ({failed_count} failed)"
+        msg += f" ({failed_count} still failed)"
 
     updates = {
         "sources": updated_sources,
