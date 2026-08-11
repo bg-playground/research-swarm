@@ -40,14 +40,6 @@ def extract_site_hints(goal: str) -> list[str]:
 
 
 def build_search_queries(goal: str, *, max_queries: int = 3) -> list[str]:
-    """
-    Expand a research goal into 1–3 search queries.
-
-    Strategy:
-    1. Always keep the original goal (cleaned).
-    2. If goal mentions docs/API, add a documentation-biased query.
-    3. If a domain appears, add a site:-scoped query for that domain.
-    """
     goal = _clean_goal(goal)
     if not goal:
         return ["software research overview"]
@@ -72,8 +64,8 @@ def build_search_queries(goal: str, *, max_queries: int = 3) -> list[str]:
 
     if len(queries) < 2:
         filler = {
-            "the", "a", "an", "and", "or", "for", "of", "to", "in", "on", "with",
-            "from", "summarize", "summary", "compare", "explain", "what", "how", "please",
+            "the", "a", "an", "and", "or", "for", "of", "to", "in", "on", "with", "from",
+            "summarize", "summary", "compare", "explain", "what", "how", "please",
         }
         tokens = [t for t in re.findall(r"[A-Za-z0-9._-]+", goal) if t.lower() not in filler]
         if len(tokens) >= 3:
@@ -94,12 +86,39 @@ def build_search_queries(goal: str, *, max_queries: int = 3) -> list[str]:
     return out
 
 
-def primary_domain_from_goal(goal: str) -> str | None:
-    """Best-effort primary domain for optional map follow-up."""
+def map_roots_from_goal(goal: str, *, max_roots: int = 2) -> list[str]:
+    """HTTPS roots for Firecrawl Map; prefers docs./developer./api. hosts."""
     sites = extract_site_hints(goal)
     if not sites:
-        return None
-    host = sites[0]
-    if not host.startswith("http"):
-        return f"https://{host}"
-    return host
+        return []
+
+    def _rank_key(host: str) -> tuple[int, str]:
+        h = host.lower()
+        if h.startswith(("docs.", "developer.", "developers.", "api.", "dev.")):
+            return (0, h)
+        if "docs" in h or "developer" in h:
+            return (1, h)
+        return (2, h)
+
+    ordered = sorted(sites, key=_rank_key)
+    roots: list[str] = []
+    seen: set[str] = set()
+    for host in ordered:
+        host = host.lower().removeprefix("www.")
+        if host.startswith("http://") or host.startswith("https://"):
+            root = host.rstrip("/")
+        else:
+            root = f"https://{host}"
+        key = root.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        roots.append(root)
+        if len(roots) >= max_roots:
+            break
+    return roots
+
+
+def primary_domain_from_goal(goal: str) -> str | None:
+    roots = map_roots_from_goal(goal, max_roots=1)
+    return roots[0] if roots else None
