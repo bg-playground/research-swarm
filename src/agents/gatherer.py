@@ -12,6 +12,7 @@ from langgraph.types import Command
 
 from src.state import ResearchState, Source
 from src.tools.firecrawl_tools import scrape_url
+from src.utils.circuit_breaker import CircuitOpenError
 
 # Safety / cost limit – easy to raise later
 MAX_SCRAPES_PER_TURN = 3
@@ -38,8 +39,9 @@ def _scrape_one(src: Source) -> Tuple[str, Optional[Source], Optional[str]]:
             return src.url, merged, None
         return src.url, None, f"no useful content returned for {src.url}"
     except ValueError as exc:
-        # Missing API key – surface specially
         return src.url, None, f"API_KEY_MISSING::{exc}"
+    except CircuitOpenError as exc:
+        return src.url, None, f"CIRCUIT_OPEN::{exc}"
     except Exception as exc:
         return src.url, None, f"scrape failed for {src.url}: {exc}"
 
@@ -69,7 +71,7 @@ def _run_batch(
             src = futures[future]
             url, result, err = future.result()
 
-            if err and err.startswith("API_KEY_MISSING::"):
+            if err and (err.startswith("API_KEY_MISSING::") or err.startswith("CIRCUIT_OPEN::")):
                 api_key_missing = True
                 errors.append(err.split("::", 1)[1])
                 for f in futures:
@@ -96,7 +98,7 @@ def gatherer_node(state: ResearchState) -> Command[Literal["supervisor"]]:
     running up to MAX_SCRAPES_PER_TURN requests in parallel.
     Failed URLs get one additional retry pass within the same turn
     after a short exponential-style backoff.
-    Gracefully degrades if the API key is missing.
+    Gracefully degrades if the API key is missing or the circuit is open.
     """
     sources = list(state.get("sources", []))
     errors = list(state.get("errors", []))
@@ -112,7 +114,6 @@ def gatherer_node(state: ResearchState) -> Command[Literal["supervisor"]]:
             },
         )
 
-    # Prefer sources that still need content, highest quality first
     candidates = sorted(
         [s for s in sources if not s.markdown],
         key=lambda s: s.quality_score,
@@ -133,7 +134,6 @@ def gatherer_node(state: ResearchState) -> Command[Literal["supervisor"]]:
 
     updated_by_url: dict[str, Source] = {s.url: s for s in sources}
 
-    # ---- First pass ----
     scraped_count, failed_count, api_key_missing, failed_sources = _run_batch(
         to_scrape, updated_by_url, errors
     )
@@ -145,7 +145,7 @@ def gatherer_node(state: ResearchState) -> Command[Literal["supervisor"]]:
                 "messages": [
                     AIMessage(
                         content=(
-                            "Gatherer: FIRECRAWL_API_KEY is not set. "
+                            "Gatherer: FIRECRAWL_API_KEY missing or circuit open. "
                             "Skipping live scrapes."
                         )
                     )
@@ -154,17 +154,14 @@ def gatherer_node(state: ResearchState) -> Command[Literal["supervisor"]]:
             },
         )
 
-    # ---- Retry pass (one extra attempt for failures) ----
     retried_count = 0
     if failed_sources:
-        # Only retry the ones that still lack content
         retry_batch = [
             s
             for s in failed_sources
             if s.url in updated_by_url and not updated_by_url[s.url].markdown
         ]
         if retry_batch:
-            # Polite exponential-style pause before retrying
             delay = RETRY_BASE_DELAY + random.uniform(0, RETRY_JITTER)
             time.sleep(delay)
 
@@ -173,7 +170,7 @@ def gatherer_node(state: ResearchState) -> Command[Literal["supervisor"]]:
             )
             retried_count = extra_scraped
             scraped_count += extra_scraped
-            failed_count = extra_failed  # remaining failures after retry
+            failed_count = extra_failed
 
             if api_key_missing:
                 return Command(
@@ -182,7 +179,7 @@ def gatherer_node(state: ResearchState) -> Command[Literal["supervisor"]]:
                         "messages": [
                             AIMessage(
                                 content=(
-                                    "Gatherer: FIRECRAWL_API_KEY is not set. "
+                                    "Gatherer: FIRECRAWL_API_KEY missing or circuit open. "
                                     "Skipping live scrapes."
                                 )
                             )
