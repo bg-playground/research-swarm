@@ -5,10 +5,13 @@ from __future__ import annotations
 from typing import Any, Dict, Literal
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
-from langchain_openai import ChatOpenAI
 from langgraph.types import Command
 
+from src.config import get_chat_model
 from src.state import ResearchState
+from src.utils.logging_setup import get_logger
+
+log = get_logger("research_swarm.synthesizer")
 
 
 def synthesizer_node(state: ResearchState) -> Command[Literal["supervisor"]]:
@@ -24,7 +27,6 @@ def synthesizer_node(state: ResearchState) -> Command[Literal["supervisor"]]:
     conflicts = state.get("conflicts", [])
     errors = list(state.get("errors", []))
 
-    # Build compact context for the LLM
     source_lines = []
     for i, s in enumerate(sources[:8], 1):
         title = s.title or s.url
@@ -50,13 +52,14 @@ def synthesizer_node(state: ResearchState) -> Command[Literal["supervisor"]]:
 
     report = None
     try:
-        llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.2)
+        llm = get_chat_model(temperature=0.2)
         response = llm.invoke([SystemMessage(content=system), HumanMessage(content=context)])
         report = response.content
+        log.info("synthesis ok report_len=%s", len(report or ""))
     except Exception as exc:
         errors.append(f"Synthesizer LLM failed: {exc}")
+        log.exception("synthesizer LLM failed")
 
-    # Fallback template
     if not report:
         lines = [
             f"# Research Report",
