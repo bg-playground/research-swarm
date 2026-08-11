@@ -1,4 +1,4 @@
-"""Gatherer agent stub – scrapes / crawls pages for clean content."""
+"""Gatherer agent – scrapes pages for clean markdown via Firecrawl."""
 
 from __future__ import annotations
 
@@ -8,16 +8,19 @@ from langchain_core.messages import AIMessage
 from langgraph.types import Command
 
 from src.state import ResearchState, Source
+from src.tools.firecrawl_tools import scrape_url
 
 
 def gatherer_node(state: ResearchState) -> Command[Literal["supervisor"]]:
     """
-    Gatherer specialist (stub).
+    Gatherer specialist.
 
-    In the real implementation this will call Firecrawl Scrape / Crawl / Interact
-    to obtain clean markdown for the most promising sources.
+    Scrapes the most promising sources that still lack markdown content.
+    Limits the number of live scrapes per turn to control cost and latency.
+    Gracefully degrades if the API key is missing or individual scrapes fail.
     """
     sources = list(state.get("sources", []))
+    errors = list(state.get("errors", []))
     goal = state.get("goal", "")
 
     if not sources:
@@ -25,50 +28,84 @@ def gatherer_node(state: ResearchState) -> Command[Literal["supervisor"]]:
             goto="supervisor",
             update={
                 "messages": [
-                    AIMessage(
-                        content="Gatherer (stub): no sources available yet. Returning to supervisor."
-                    )
+                    AIMessage(content="Gatherer: no sources available yet. Returning to supervisor.")
                 ],
-                "errors": state.get("errors", [])
-                + ["Gatherer called with empty sources list"],
+                "errors": errors + ["Gatherer called with empty sources list"],
             },
         )
 
-    # TODO: Replace with real Firecrawl scrape / batch_scrape / crawl
-    # Prefer sources that still lack markdown content.
+    # Prefer sources that still need content, highest quality first
+    candidates = sorted(
+        [s for s in sources if not s.markdown],
+        key=lambda s: s.quality_score,
+        reverse=True,
+    )
 
-    updated_sources: list[Source] = []
+    # Safety limit: only scrape a few per turn
+    MAX_SCRAPES_PER_TURN = 3
+    to_scrape = candidates[:MAX_SCRAPES_PER_TURN]
+
+    if not to_scrape:
+        return Command(
+            goto="supervisor",
+            update={
+                "messages": [
+                    AIMessage(content="Gatherer: all current sources already have content.")
+                ]
+            },
+        )
+
+    updated_by_url: dict[str, Source] = {s.url: s for s in sources}
     scraped_count = 0
+    failed_count = 0
 
-    for src in sources:
-        if src.markdown is None or src.markdown.strip() == "":
-            # Simulate a successful scrape
-            new_src = src.model_copy(
+    for src in to_scrape:
+        try:
+            result = scrape_url(src.url, only_main_content=True)
+            if result and result.markdown:
+                # Preserve original metadata / quality while adding content
+                merged = result.model_copy(
+                    update={
+                        "quality_score": max(src.quality_score, result.quality_score),
+                        "metadata": {**src.metadata, **result.metadata, "scraped": True},
+                    }
+                )
+                updated_by_url[src.url] = merged
+                scraped_count += 1
+            else:
+                failed_count += 1
+                errors.append(f"Gatherer: no useful content returned for {src.url}")
+        except ValueError as exc:
+            # Missing API key – abort further attempts this turn
+            errors.append(str(exc))
+            return Command(
+                goto="supervisor",
                 update={
-                    "markdown": (
-                        f"# Stub content for {src.url}\n\n"
-                        f"This is placeholder markdown that would normally be returned "
-                        f"by Firecrawl for the research goal: {goal[:80]}...\n\n"
-                        "Replace this with a real `firecrawl.scrape()` or crawl call."
-                    ),
-                    "summary": f"Stub summary of content from {src.url}",
-                    "quality_score": min(src.quality_score + 0.15, 0.95),
-                    "source_type": "scrape",
-                    "metadata": {**src.metadata, "stub_scraped": True},
-                }
+                    "messages": [
+                        AIMessage(
+                            content=(
+                                "Gatherer: FIRECRAWL_API_KEY is not set. "
+                                "Skipping live scrapes."
+                            )
+                        )
+                    ],
+                    "errors": errors,
+                },
             )
-            updated_sources.append(new_src)
-            scraped_count += 1
-        else:
-            updated_sources.append(src)
+        except Exception as exc:
+            failed_count += 1
+            errors.append(f"Gatherer scrape failed for {src.url}: {exc}")
+
+    updated_sources = list(updated_by_url.values())
+
+    msg = f"Gatherer: successfully scraped {scraped_count} source(s)"
+    if failed_count:
+        msg += f" ({failed_count} failed)"
 
     updates = {
         "sources": updated_sources,
-        "messages": [
-            AIMessage(
-                content=f"Gatherer (stub): simulated scrape on {scraped_count} source(s)."
-            )
-        ],
+        "messages": [AIMessage(content=msg)],
+        "errors": errors,
     }
 
     return Command(goto="supervisor", update=updates)

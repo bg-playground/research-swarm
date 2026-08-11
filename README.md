@@ -4,8 +4,8 @@ Multi-agent research system built with **LangGraph** + **Firecrawl**.
 
 A supervisor routes work across specialized agents (Discovery → Gatherer → Extractor → Verifier → Synthesizer) to produce cited research reports from the live web.
 
-> **Status:** Supervisor + specialist stubs + full graph wiring are in place.  
-> Next up: real Firecrawl tool implementations.
+> **Status:** Core system is live. Supervisor, real Firecrawl-powered discovery & gatherer, LLM extractor/synthesizer, and full graph wiring are in place.  
+> Next up: polish, evaluation examples, and optional Interact support.
 
 ## Architecture
 
@@ -33,6 +33,8 @@ src/
 ├── state.py          # ResearchState + supporting models
 ├── main.py           # Simple CLI entry point
 ├── config.py
+├── tools/
+│   └── firecrawl_tools.py
 └── agents/
     ├── supervisor.py
     ├── discovery.py
@@ -42,18 +44,15 @@ src/
     └── synthesizer.py
 ```
 
-## Quick Start (stub mode)
+## Quick Start
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
 pip install -e .
-# OPENAI_API_KEY is required only when the real supervisor LLM is used.
-# The current stubs themselves do not call external services.
+cp .env.example .env   # add OPENAI_API_KEY and FIRECRAWL_API_KEY
 
 python -m src.main "Your research goal here"
-# or
-python examples/run_stub.py "Your research goal here"
 ```
 
 ## License

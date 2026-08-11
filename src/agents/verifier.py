@@ -1,4 +1,4 @@
-"""Verifier agent stub – cross-checks facts and scores source quality."""
+"""Verifier agent – cross-checks facts and scores source quality."""
 
 from __future__ import annotations
 
@@ -12,52 +12,56 @@ from src.state import Conflict, ResearchState, Source
 
 def verifier_node(state: ResearchState) -> Command[Literal["supervisor"]]:
     """
-    Verifier specialist (stub).
+    Verifier specialist.
 
-    In the real implementation this agent will:
-    - Compare facts across sources
-    - Detect contradictions
-    - Adjust quality_score on sources
-    - Possibly request additional gathering if confidence is low
+    Performs lightweight quality scoring and conflict detection.
+    A fuller LLM-as-judge version can be added later.
     """
     sources = list(state.get("sources", []))
     facts = state.get("extracted_facts", [])
     existing_conflicts = list(state.get("conflicts", []))
+    errors = list(state.get("errors", []))
 
-    if len(facts) < 2 and len(sources) < 2:
+    if len(sources) == 0 and len(facts) == 0:
         return Command(
             goto="supervisor",
             update={
                 "messages": [
-                    AIMessage(
-                        content="Verifier (stub): insufficient data to verify. Returning control."
-                    )
+                    AIMessage(content="Verifier: nothing to verify yet. Returning control.")
                 ]
             },
         )
 
-    # TODO: Real verification logic
-    # - Embeddings or LLM-as-judge to find contradictions
-    # - Source reputation heuristics
-    # - Confidence recalibration
-
-    # Stub behaviour: mildly boost quality scores and occasionally invent a low-severity conflict
+    # Simple heuristic quality adjustment
     updated_sources: list[Source] = []
     for src in sources:
-        new_score = min(src.quality_score + 0.05, 0.98)
-        updated_sources.append(src.model_copy(update={"quality_score": new_score}))
+        score = src.quality_score
+        if src.markdown and len(src.markdown) > 500:
+            score = min(score + 0.1, 0.95)
+        if src.source_type == "scrape":
+            score = min(score + 0.05, 0.98)
+        updated_sources.append(src.model_copy(update={"quality_score": score}))
 
     new_conflicts = list(existing_conflicts)
-    if len(facts) >= 2 and len(existing_conflicts) == 0:
-        # Add one illustrative conflict so downstream code has something to work with
-        new_conflicts.append(
-            Conflict(
-                description="Stub conflict: two sources appear to disagree on a detail "
-                "(replace with real cross-checking).",
-                related_facts=[f.claim for f in facts[:2]],
-                severity="low",
+
+    # Very lightweight conflict signal: multiple facts with the same claim but different values
+    claim_map: dict[str, list] = {}
+    for f in facts:
+        key = f.claim.strip().lower()[:80]
+        claim_map.setdefault(key, []).append(f)
+
+    for claim, group in claim_map.items():
+        if len(group) < 2:
+            continue
+        values = {str(g.value) for g in group}
+        if len(values) > 1 and not any(c.description.startswith("Possible disagreement") for c in new_conflicts):
+            new_conflicts.append(
+                Conflict(
+                    description=f"Possible disagreement on claim: '{group[0].claim[:60]}…'",
+                    related_facts=[g.claim for g in group],
+                    severity="low",
+                )
             )
-        )
 
     updates = {
         "sources": updated_sources,
@@ -65,12 +69,12 @@ def verifier_node(state: ResearchState) -> Command[Literal["supervisor"]]:
         "messages": [
             AIMessage(
                 content=(
-                    f"Verifier (stub): reviewed {len(sources)} source(s) and "
-                    f"{len(facts)} fact(s). "
-                    f"Conflicts now: {len(new_conflicts)}."
+                    f"Verifier: reviewed {len(sources)} source(s) and {len(facts)} fact(s). "
+                    f"Conflicts: {len(new_conflicts)}."
                 )
             )
         ],
+        "errors": errors,
     }
 
     return Command(goto="supervisor", update=updates)

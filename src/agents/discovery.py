@@ -1,4 +1,4 @@
-"""Discovery agent stub – finds candidate sources via search / map."""
+"""Discovery agent – finds candidate sources via Firecrawl Search (and optional Map)."""
 
 from __future__ import annotations
 
@@ -8,57 +8,45 @@ from langchain_core.messages import AIMessage
 from langgraph.types import Command
 
 from src.state import ResearchState, Source
+from src.tools.firecrawl_tools import search_web
 
 
 def discovery_node(state: ResearchState) -> Command[Literal["supervisor"]]:
     """
-    Discovery specialist (stub).
+    Discovery specialist.
 
-    In the real implementation this will call Firecrawl Search + Map
-    to locate high-quality starting points for the research goal.
+    Uses Firecrawl Search to locate high-quality starting points for the research goal.
+    Gracefully degrades if the API key is missing or the call fails.
     """
     goal = state.get("goal", "unknown goal")
-    existing_sources = state.get("sources", [])
-
-    # TODO: Replace with real Firecrawl search + map calls
-    # Example future shape:
-    #   results = firecrawl.search(query=goal, limit=5)
-    #   mapped = firecrawl.map(url=some_url)
-
-    # Stub: invent a couple of plausible sources so the rest of the graph can run
-    new_sources = [
-        Source(
-            url="https://example.com/research-topic",
-            title=f"Overview related to: {goal[:60]}",
-            summary="Stub discovery result – replace with real Firecrawl Search.",
-            quality_score=0.6,
-            source_type="search",
-            metadata={"stub": True, "query": goal},
-        ),
-        Source(
-            url="https://example.org/deep-dive",
-            title="Secondary source (stub)",
-            summary="Another placeholder discovered source.",
-            quality_score=0.55,
-            source_type="search",
-            metadata={"stub": True},
-        ),
-    ]
-
-    # Avoid obvious duplicates in the stub
+    existing_sources = list(state.get("sources", []))
     existing_urls = {s.url for s in existing_sources}
-    unique_new = [s for s in new_sources if s.url not in existing_urls]
+    errors = list(state.get("errors", []))
+
+    new_sources: list[Source] = []
+    message = ""
+
+    try:
+        # Primary path: live web search
+        results = search_web(goal, limit=6, scrape=False)
+        unique = [s for s in results if s.url not in existing_urls]
+        new_sources.extend(unique)
+        message = f"Discovery: found {len(unique)} new source(s) via Firecrawl Search."
+    except ValueError as exc:
+        # Missing API key
+        errors.append(str(exc))
+        message = (
+            "Discovery: FIRECRAWL_API_KEY is not set. "
+            "Skipping live search. Add the key to enable real discovery."
+        )
+    except Exception as exc:
+        errors.append(f"Discovery search failed: {exc}")
+        message = f"Discovery: search failed ({exc}). Returning control to supervisor."
 
     updates = {
-        "sources": existing_sources + unique_new,
-        "messages": [
-            AIMessage(
-                content=(
-                    f"Discovery (stub): found {len(unique_new)} new candidate source(s) "
-                    f"for goal '{goal[:80]}'."
-                )
-            )
-        ],
+        "sources": existing_sources + new_sources,
+        "messages": [AIMessage(content=message)],
+        "errors": errors,
     }
 
     return Command(goto="supervisor", update=updates)
