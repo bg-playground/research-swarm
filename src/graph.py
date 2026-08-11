@@ -28,7 +28,6 @@ def build_graph():
     """
     builder = StateGraph(ResearchState)
 
-    # Register nodes
     builder.add_node("supervisor", supervisor_node)
     builder.add_node("discovery", discovery_node)
     builder.add_node("gatherer", gatherer_node)
@@ -36,17 +35,11 @@ def build_graph():
     builder.add_node("verifier", verifier_node)
     builder.add_node("synthesizer", synthesizer_node)
 
-    # Entry point
     builder.add_edge(START, "supervisor")
 
-    # Specialists always return control to the supervisor via Command(goto="supervisor").
-    # The supervisor itself returns Command(goto=<specialist> | "__end__").
-    # Because we use Command-based routing, we do not need classic conditional edges
-    # from the supervisor. We only need to declare that specialists can go back.
     for specialist in ["discovery", "gatherer", "extractor", "verifier", "synthesizer"]:
         builder.add_edge(specialist, "supervisor")
 
-    # Compile
     graph = builder.compile()
     return graph
 
@@ -69,6 +62,7 @@ def create_initial_state(
         sources=[],
         extracted_facts=[],
         conflicts=[],
+        extracted_urls=[],
         next_agent=None,
         iteration=0,
         max_iterations=max_iterations,
@@ -92,5 +86,5 @@ def run_research(
     """
     graph = build_graph()
     initial = create_initial_state(goal, max_iterations=max_iterations)
-    result = graph.invoke(initial, config=config or {})
-    return result
+    final = graph.invoke(initial, config=config or {})
+    return final

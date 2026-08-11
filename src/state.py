@@ -26,7 +26,6 @@ class ExtractedFact(BaseModel):
     """A structured fact extracted from one or more sources."""
 
     claim: str
-    # Must be a concrete JSON Schema type for OpenAI structured outputs (not Any).
     value: str = Field(
         description="Concrete value as a short string (numbers, lists, etc. serialized to text)"
     )
@@ -61,6 +60,7 @@ class ResearchState(TypedDict):
     sources: List[Source]
     extracted_facts: List[ExtractedFact]
     conflicts: List[Conflict]
+    extracted_urls: List[str]
     next_agent: Optional[
         Literal["discovery", "gatherer", "extractor", "verifier", "synthesizer", "FINISH"]
     ]
