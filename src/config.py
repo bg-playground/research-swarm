@@ -36,7 +36,6 @@ def get_firecrawl_api_url() -> str | None:
 
 
 def get_llm_model() -> str:
-    """Chat model id (OpenAI-compatible). Default: gpt-4o-mini."""
     return (os.getenv("RESEARCH_SWARM_MODEL") or "gpt-4o-mini").strip()
 
 
@@ -48,13 +47,15 @@ def get_llm_temperature() -> float:
         return 0.0
 
 
-def get_chat_model(**overrides: Any):
-    """
-    Shared ChatOpenAI factory for supervisor / extractor / synthesizer.
+def get_cache_ttl_hours() -> float:
+    raw = (os.getenv("RESEARCH_SWARM_CACHE_TTL_HOURS") or "24").strip()
+    try:
+        return float(raw)
+    except ValueError:
+        return 24.0
 
-    Honors RESEARCH_SWARM_MODEL and RESEARCH_SWARM_TEMPERATURE.
-    Pass kwargs to override (e.g. temperature=0.2 for synthesis).
-    """
+
+def get_chat_model(**overrides: Any):
     from langchain_openai import ChatOpenAI
 
     params: dict[str, Any] = {
