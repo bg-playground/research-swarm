@@ -93,6 +93,73 @@ def resolve_report_path(
     return latest
 
 
+def _empty_index() -> dict[str, Any]:
+    return {
+        "updated_at": None,
+        "count": 0,
+        "runs": [],
+        "missing": True,
+    }
+
+
+def load_report_index(index_path: Optional[Path] = None) -> dict[str, Any]:
+    """Load reports/index.json safely. Missing/corrupt never raises."""
+    path = index_path or (reports_dir() / "index.json")
+    if not path.is_file():
+        return _empty_index()
+
+    try:
+        raw = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        out = _empty_index()
+        out["missing"] = False
+        out["corrupt"] = True
+        out["error"] = "unreadable"
+        return out
+
+    if not raw:
+        out = _empty_index()
+        out["missing"] = False
+        out["empty"] = True
+        return out
+
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        out = _empty_index()
+        out["missing"] = False
+        out["corrupt"] = True
+        out["error"] = f"invalid json: {exc}"
+        return out
+
+    if isinstance(data, list):
+        runs = [e for e in data if isinstance(e, dict)]
+        return {
+            "updated_at": None,
+            "count": len(runs),
+            "runs": runs,
+            "missing": False,
+        }
+
+    if isinstance(data, dict):
+        runs = data.get("runs")
+        if not isinstance(runs, list):
+            runs = []
+        runs = [e for e in runs if isinstance(e, dict)]
+        return {
+            "updated_at": data.get("updated_at"),
+            "count": len(runs),
+            "runs": runs,
+            "missing": False,
+        }
+
+    out = _empty_index()
+    out["missing"] = False
+    out["corrupt"] = True
+    out["error"] = "unexpected index shape"
+    return out
+
+
 def update_report_index(
     *,
     path: Path,
@@ -104,46 +171,57 @@ def update_report_index(
     n_iter: Optional[int],
     strategy: Strategy,
     fingerprint: Optional[str] = None,
-) -> Path:
-    root = reports_dir()
-    root.mkdir(parents=True, exist_ok=True)
-    index_path = root / "index.json"
-
-    entries: list[dict[str, Any]] = []
-    if index_path.is_file():
-        try:
-            data = json.loads(index_path.read_text(encoding="utf-8"))
-            if isinstance(data, list):
-                entries = data
-            elif isinstance(data, dict) and isinstance(data.get("runs"), list):
-                entries = data["runs"]
-        except (OSError, json.JSONDecodeError):
-            entries = []
-
+) -> Optional[Path]:
+    """Append run to index.json. Returns path or None; never raises."""
     try:
-        rel = str(path.resolve().relative_to(root.resolve()))
-    except ValueError:
-        rel = str(path)
+        root = reports_dir()
+        root.mkdir(parents=True, exist_ok=True)
+        index_path = root / "index.json"
 
-    entry = {
-        "path": rel,
-        "goal": goal,
-        "status": status,
-        "iterations": n_iter,
-        "sources": n_src,
-        "facts": n_facts,
-        "conflicts": n_conf,
-        "strategy": strategy,
-        "fingerprint": fingerprint,
-        "saved_at": datetime.now(timezone.utc).isoformat(),
-    }
-    entries.append(entry)
-    entries = entries[-200:]
+        loaded = load_report_index(index_path)
+        entries: list[dict[str, Any]] = list(loaded.get("runs") or [])
 
-    payload = {
-        "updated_at": datetime.now(timezone.utc).isoformat(),
-        "count": len(entries),
-        "runs": entries,
-    }
-    index_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    return index_path
+        if loaded.get("corrupt") and index_path.is_file():
+            bak = index_path.with_suffix(".json.bak")
+            try:
+                index_path.replace(bak)
+            except OSError:
+                try:
+                    bak.write_text(
+                        index_path.read_text(encoding="utf-8", errors="replace"),
+                        encoding="utf-8",
+                    )
+                except OSError:
+                    pass
+
+        try:
+            rel = str(path.resolve().relative_to(root.resolve()))
+        except ValueError:
+            rel = str(path)
+
+        entry = {
+            "path": rel,
+            "goal": goal,
+            "status": status,
+            "iterations": n_iter,
+            "sources": n_src,
+            "facts": n_facts,
+            "conflicts": n_conf,
+            "strategy": strategy,
+            "fingerprint": fingerprint,
+            "saved_at": datetime.now(timezone.utc).isoformat(),
+        }
+        entries.append(entry)
+        entries = entries[-200:]
+
+        payload = {
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "count": len(entries),
+            "runs": entries,
+        }
+        index_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        return index_path
+    except OSError:
+        return None
+    except Exception:
+        return None

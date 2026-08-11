@@ -1,6 +1,7 @@
-"""Tests for report versioning strategies."""
+"""Tests for report versioning strategies and index resilience."""
 
 from src.utils.report_versioning import (
+    load_report_index,
     resolve_report_path,
     resolve_strategy,
     slugify_goal,
@@ -81,7 +82,42 @@ def test_update_report_index(tmp_path, monkeypatch):
         strategy="timestamp",
         fingerprint="abc",
     )
+    assert idx is not None
     assert idx.is_file()
     data = idx.read_text(encoding="utf-8")
     assert "runs" in data
     assert "abc" in data
+
+
+def test_load_report_index_missing(tmp_path, monkeypatch):
+    monkeypatch.setenv("RESEARCH_SWARM_REPORTS_DIR", str(tmp_path))
+    data = load_report_index()
+    assert data["missing"] is True
+    assert data["runs"] == []
+    assert data["count"] == 0
+
+
+def test_load_report_index_corrupt_then_update(tmp_path, monkeypatch):
+    monkeypatch.setenv("RESEARCH_SWARM_REPORTS_DIR", str(tmp_path))
+    bad = tmp_path / "index.json"
+    bad.write_text("{not-json", encoding="utf-8")
+
+    loaded = load_report_index(bad)
+    assert loaded.get("corrupt") is True
+
+    report = tmp_path / "run.md"
+    report.write_text("# ok", encoding="utf-8")
+    idx = update_report_index(
+        path=report,
+        goal="recover",
+        status="completed",
+        n_src=0,
+        n_facts=0,
+        n_conf=0,
+        n_iter=1,
+        strategy="timestamp",
+    )
+    assert idx is not None
+    assert idx.is_file()
+    assert "recover" in idx.read_text(encoding="utf-8")
+    assert (tmp_path / "index.json.bak").is_file()
