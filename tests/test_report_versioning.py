@@ -95,6 +95,8 @@ def test_load_report_index_missing(tmp_path, monkeypatch):
     assert data["missing"] is True
     assert data["runs"] == []
     assert data["count"] == 0
+    assert data.get("error") is None
+    assert data.get("corrupt") is not True
 
 
 def test_load_report_index_corrupt_then_update(tmp_path, monkeypatch):
@@ -104,6 +106,8 @@ def test_load_report_index_corrupt_then_update(tmp_path, monkeypatch):
 
     loaded = load_report_index(bad)
     assert loaded.get("corrupt") is True
+    err = loaded.get("error") or ""
+    assert err.startswith("invalid json:"), f"unexpected error message: {err!r}"
 
     report = tmp_path / "run.md"
     report.write_text("# ok", encoding="utf-8")
@@ -130,6 +134,7 @@ def test_load_report_index_empty_file(tmp_path, monkeypatch):
     assert data.get("empty") is True
     assert data["runs"] == []
     assert data.get("corrupt") is not True
+    assert data.get("error") is None
 
 
 def test_load_report_index_whitespace_only(tmp_path, monkeypatch):
@@ -138,6 +143,7 @@ def test_load_report_index_whitespace_only(tmp_path, monkeypatch):
     data = load_report_index()
     assert data.get("empty") is True
     assert data["runs"] == []
+    assert data.get("error") is None
 
 
 def test_load_report_index_truncated_json(tmp_path, monkeypatch):
@@ -146,7 +152,9 @@ def test_load_report_index_truncated_json(tmp_path, monkeypatch):
     data = load_report_index()
     assert data.get("corrupt") is True
     assert data["runs"] == []
-    assert "invalid json" in (data.get("error") or "")
+    err = data.get("error") or ""
+    assert err.startswith("invalid json:"), f"unexpected error message: {err!r}"
+    assert len(err) > len("invalid json:")
 
 
 def test_load_report_index_unexpected_shape_string(tmp_path, monkeypatch):
@@ -155,7 +163,8 @@ def test_load_report_index_unexpected_shape_string(tmp_path, monkeypatch):
     data = load_report_index()
     assert data.get("corrupt") is True
     assert data["runs"] == []
-    assert "unexpected" in (data.get("error") or "")
+    err = data.get("error") or ""
+    assert err == "unexpected index shape", f"unexpected error message: {err!r}"
 
 
 def test_load_report_index_unexpected_shape_number(tmp_path, monkeypatch):
@@ -164,6 +173,8 @@ def test_load_report_index_unexpected_shape_number(tmp_path, monkeypatch):
     data = load_report_index()
     assert data.get("corrupt") is True
     assert data["runs"] == []
+    err = data.get("error") or ""
+    assert err == "unexpected index shape", f"unexpected error message: {err!r}"
 
 
 def test_load_report_index_list_form_filters_non_dicts(tmp_path, monkeypatch):
@@ -174,6 +185,7 @@ def test_load_report_index_list_form_filters_non_dicts(tmp_path, monkeypatch):
     )
     data = load_report_index()
     assert data.get("corrupt") is not True
+    assert data.get("error") is None
     assert data["missing"] is False
     assert data["count"] == 2
     assert all(isinstance(r, dict) for r in data["runs"])
@@ -189,6 +201,8 @@ def test_load_report_index_dict_runs_not_list(tmp_path, monkeypatch):
     assert data["missing"] is False
     assert data["runs"] == []
     assert data["count"] == 0
+    assert data.get("error") is None
+    assert data.get("corrupt") is not True
 
 
 def test_update_after_empty_index_creates_valid_file(tmp_path, monkeypatch):
@@ -209,6 +223,7 @@ def test_update_after_empty_index_creates_valid_file(tmp_path, monkeypatch):
     assert idx is not None
     reloaded = load_report_index(idx)
     assert reloaded.get("corrupt") is not True
+    assert reloaded.get("error") is None
     assert reloaded["count"] == 1
     assert reloaded["runs"][0]["goal"] == "from-empty"
 
@@ -217,6 +232,11 @@ def test_update_after_corrupt_preserves_bak_contents(tmp_path, monkeypatch):
     monkeypatch.setenv("RESEARCH_SWARM_REPORTS_DIR", str(tmp_path))
     poison = "{definitely-not-json!!!"
     (tmp_path / "index.json").write_text(poison, encoding="utf-8")
+
+    before = load_report_index()
+    assert before.get("corrupt") is True
+    assert (before.get("error") or "").startswith("invalid json:")
+
     report = tmp_path / "r.md"
     report.write_text("# body", encoding="utf-8")
     idx = update_report_index(
@@ -235,6 +255,7 @@ def test_update_after_corrupt_preserves_bak_contents(tmp_path, monkeypatch):
     assert bak.read_text(encoding="utf-8") == poison
     reloaded = load_report_index(idx)
     assert reloaded.get("corrupt") is not True
+    assert reloaded.get("error") is None
     assert reloaded["count"] == 1
     assert reloaded["runs"][0]["strategy"] == "sequential"
 
