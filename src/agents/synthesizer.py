@@ -44,10 +44,15 @@ def synthesizer_node(state: ResearchState) -> Command[Literal["supervisor"]]:
 
     system = (
         "You are a precise research synthesizer. "
-        "Write a clear, well-structured markdown report that answers the research goal. "
-        "Include an executive summary, key findings with citations where possible, "
-        "and a short sources section. Be honest about gaps or conflicts. "
-        "Do not invent facts."
+        "Write a clear, well-structured markdown report that answers the research goal.\n\n"
+        "Preferred structure:\n"
+        "1. Title (H1)\n"
+        "2. Executive summary (2–4 sentences)\n"
+        "3. Key findings (numbered or bulleted; cite sources inline when possible)\n"
+        "4. Gaps / caveats (if any)\n"
+        "5. Sources (numbered list with titles and URLs)\n\n"
+        "Be honest about conflicts and thin evidence. Do not invent facts. "
+        "Prefer concrete claims over marketing language."
     )
 
     report = None
@@ -62,16 +67,16 @@ def synthesizer_node(state: ResearchState) -> Command[Literal["supervisor"]]:
 
     if not report:
         lines = [
-            f"# Research Report",
-            f"",
+            "# Research Report",
+            "",
             f"**Goal:** {goal}",
-            f"",
-            f"## Summary",
-            f"Automated synthesis was unavailable. Below is a structured dump of collected material.",
-            f"",
+            "",
+            "## Summary",
+            "Automated synthesis was unavailable. Below is a structured dump of collected material.",
+            "",
             f"## Sources ({len(sources)})",
             *source_lines,
-            f"",
+            "",
             f"## Extracted Facts ({len(facts)})",
             *fact_lines,
         ]
