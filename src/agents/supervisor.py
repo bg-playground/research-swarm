@@ -10,9 +10,10 @@ from langgraph.types import Command
 from pydantic import BaseModel, Field
 
 from src.state import ResearchPlan, ResearchState
+from src.utils.logging_setup import get_logger
 
+log = get_logger("research_swarm.supervisor")
 
-# ---------- Structured decision model ----------
 
 class SupervisorDecision(BaseModel):
     """Structured output the supervisor must produce."""
@@ -32,8 +33,6 @@ class SupervisorDecision(BaseModel):
         description="Short status update for logging / human observation.",
     )
 
-
-# ---------- Prompt ----------
 
 SUPERVISOR_SYSTEM_PROMPT = """You are the Supervisor of a multi-agent research swarm.
 
@@ -75,7 +74,6 @@ def _build_supervisor_messages(state: ResearchState) -> list:
         max_iterations=max_iterations,
     )
 
-    # Summarize current knowledge for the prompt
     plan = state.get("plan")
     sources = state.get("sources", [])
     facts = state.get("extracted_facts", [])
@@ -98,15 +96,12 @@ def _build_supervisor_messages(state: ResearchState) -> list:
 
     human_content = "Current state summary:\n" + "\n".join(f"- {p}" for p in summary_parts)
 
-    # Include the last few messages for conversational context
     recent_messages = state.get("messages", [])[-4:]
 
     messages = [SystemMessage(content=system), HumanMessage(content=human_content)]
     messages.extend(recent_messages)
     return messages
 
-
-# ---------- Supervisor node ----------
 
 def supervisor_node(state: ResearchState) -> Command[Literal[
     "discovery", "gatherer", "extractor", "verifier", "synthesizer", "__end__"
@@ -120,8 +115,8 @@ def supervisor_node(state: ResearchState) -> Command[Literal[
     iteration = state.get("iteration", 0)
     max_iterations = state.get("max_iterations", 12)
 
-    # Hard safety stop
     if iteration >= max_iterations:
+        log.info("Max iterations reached (%s) — finishing", max_iterations)
         return Command(
             goto="__end__",
             update={
@@ -137,7 +132,15 @@ def supervisor_node(state: ResearchState) -> Command[Literal[
     messages = _build_supervisor_messages(state)
     decision: SupervisorDecision = structured_llm.invoke(messages)
 
-    # Prepare state updates
+    log.info(
+        "iteration=%s next=%s sources=%s facts=%s | %s",
+        iteration + 1,
+        decision.next_agent,
+        len(state.get("sources", [])),
+        len(state.get("extracted_facts", [])),
+        decision.reasoning[:120].replace("\n", " "),
+    )
+
     updates: dict = {
         "next_agent": decision.next_agent,
         "iteration": iteration + 1,
@@ -152,7 +155,6 @@ def supervisor_node(state: ResearchState) -> Command[Literal[
     if decision.updated_plan is not None:
         updates["plan"] = decision.updated_plan
 
-    # Map FINISH → LangGraph end
     if decision.next_agent == "FINISH":
         updates["status"] = "completed"
         return Command(goto="__end__", update=updates)
