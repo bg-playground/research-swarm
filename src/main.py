@@ -301,9 +301,17 @@ def main(argv: list[str] | None = None) -> int:
                         strategy=strat,
                         fingerprint=fp,
                     )
-                    _safe_print(f"{S.dim}Index{S.reset}  {idx}")
-                except Exception:
-                    pass
+                    if idx is not None:
+                        _safe_print(f"{S.dim}Index{S.reset}  {idx}")
+                    else:
+                        _safe_print(
+                            f"{S.dim}Index{S.reset}  "
+                            f"(skipped - reports/index.json unavailable)"
+                        )
+                except Exception as exc:
+                    _safe_print(
+                        f"{S.dim}Index{S.reset}  (skipped - {type(exc).__name__})"
+                    )
         else:
             _safe_print(f"{S.yellow}No report content to write to {output_path}{S.reset}")
 
